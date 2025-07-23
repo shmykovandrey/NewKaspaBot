@@ -1,18 +1,18 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <ItemGroup>
-    <ProjectReference Include="..\KaspaBot.Domain\KaspaBot.Domain.csproj" />
-  </ItemGroup>
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="FluentResults" Version="4.0.0" />
-    <PackageReference Include="MediatR" Version="13.0.0" />
-  </ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\KaspaBot.Domain\KaspaBot.Domain.csproj" />
+	</ItemGroup>
 
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+	<ItemGroup>
+	  <PackageReference Include="FluentResults" Version="4.0.0" />
+	  <PackageReference Include="MediatR" Version="11.1.0" />
+	</ItemGroup>
 
 </Project>

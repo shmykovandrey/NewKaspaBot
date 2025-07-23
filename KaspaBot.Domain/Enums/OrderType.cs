@@ -1,1 +1,7 @@
-﻿public enum OrderType { Market, Limit }
+﻿namespace KaspaBot.Domain.Enums;
+
+public enum OrderType
+{
+    Market,
+    Limit
+}

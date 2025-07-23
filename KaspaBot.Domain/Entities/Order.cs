@@ -1,8 +1,11 @@
-﻿// KaspaBot.Domain/Entities/Order.cs
+﻿using KaspaBot.Domain.Enums;
+
+namespace KaspaBot.Domain.Entities;
+
 public class Order
 {
-    public string Id { get; set; }
-    public string Symbol { get; set; }
+    public required string Id { get; set; }
+    public required string Symbol { get; set; }
     public OrderSide Side { get; set; }
     public OrderType Type { get; set; }
     public decimal Quantity { get; set; }
@@ -10,13 +13,7 @@ public class Order
     public OrderStatus Status { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
-}
-
-// KaspaBot.Domain/Entities/OrderPair.cs
-public class OrderPair
-{
-    public string Id { get; set; }
-    public Order BuyOrder { get; set; }
-    public Order SellOrder { get; set; }
-    public DateTime CreatedAt { get; set; }
+    public decimal QuantityFilled { get; set; }
+    public decimal QuoteQuantityFilled { get; set; }
+    public decimal Commission { get; set; }
 }

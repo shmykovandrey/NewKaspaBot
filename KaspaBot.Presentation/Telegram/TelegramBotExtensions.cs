@@ -1,5 +1,5 @@
-// KaspaBot.Presentation/Telegram/TelegramBotExtensions.cs
-using Microsoft.Extensions.Configuration; // Добавить эту строку
+using KaspaBot.Presentation.Telegram.CommandHandlers;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Telegram.Bot;
 
@@ -11,6 +11,11 @@ public static class TelegramBotExtensions
     {
         services.AddSingleton<ITelegramBotClient>(_ =>
             new TelegramBotClient(configuration["Telegram:Token"]));
+
+        services.AddScoped<TradingCommandHandler>();
+
+        // Добавим хостинг Telegram-пула
+        services.AddHostedService<TelegramPollingService>();
 
         return services;
     }
