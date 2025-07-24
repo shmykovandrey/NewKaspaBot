@@ -1,29 +1,45 @@
-using KaspaBot.Application.Trading.Handlers;
+using CryptoExchange.Net.Authentication;
 using KaspaBot.Domain.Interfaces;
-using KaspaBot.Infrastructure.Persistence;
-using KaspaBot.Infrastructure.Repositories;
+using KaspaBot.Infrastructure.Options;
 using KaspaBot.Infrastructure.Services;
 using MediatR;
-using Microsoft.EntityFrameworkCore;
+using Mexc.Net.Clients;
+using Mexc.Net.Interfaces.Clients;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
-namespace KaspaBot.Infrastructure.Extensions;
-
-public static class InfrastructureExtensions
+namespace KaspaBot.Infrastructure.Extensions
 {
-    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
+    public static class InfrastructureExtensions
     {
-        services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlite(configuration.GetConnectionString("DefaultConnection")));
+        public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
+        {
+            // Регистрация MexcOptions
+            services.Configure<MexcOptions>(configuration.GetSection(MexcOptions.SectionName));
 
-        services.AddScoped<IUserRepository, UserRepository>();
-        services.AddScoped<IMexcService, MexcService>();
-        services.AddScoped<IPriceStreamService, PriceStreamService>();
+            // Регистрация MexcRestClient
+            services.AddSingleton<IMexcRestClient>(provider =>
+            {
+                var options = configuration.GetSection(MexcOptions.SectionName).Get<MexcOptions>();
+                if (options == null || string.IsNullOrEmpty(options.ApiKey) || string.IsNullOrEmpty(options.ApiSecret))
+                {
+                    throw new InvalidOperationException("Mexc API credentials are not configured properly");
+                }
 
-        // MediatR для CQRS
-        services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<PlaceOrderCommandHandler>());
+                var client = new MexcRestClient();
+                client.SetApiCredentials(new ApiCredentials(options.ApiKey, options.ApiSecret));
+                return client;
+            });
 
-        return services;
+            // Регистрация сервисов
+            services.AddScoped<IMexcService, MexcService>();
+            services.AddScoped<IPriceStreamService, PriceStreamService>();
+
+            // Регистрация MediatR (упрощенная версия)
+            services.AddMediatR(typeof(InfrastructureExtensions).Assembly);
+
+            return services;
+        }
     }
 }

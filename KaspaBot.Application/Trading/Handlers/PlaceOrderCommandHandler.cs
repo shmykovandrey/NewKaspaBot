@@ -2,54 +2,71 @@
 using KaspaBot.Application.Trading.Commands;
 using KaspaBot.Application.Trading.Dtos;
 using KaspaBot.Domain.Entities;
-using KaspaBot.Domain.Enums;
 using KaspaBot.Domain.Interfaces;
 using MediatR;
+using Mexc.Net.Enums;
 using Microsoft.Extensions.Logging;
 
-namespace KaspaBot.Application.Trading.Handlers;
-
-public class PlaceOrderCommandHandler : IRequestHandler<PlaceOrderCommand, Result<OrderDto>>
+namespace KaspaBot.Application.Trading.Handlers
 {
-    private readonly IMexcService _mexcService;
-    private readonly IUserRepository _userRepository;
-    private readonly ILogger<PlaceOrderCommandHandler> _logger;
-
-    public PlaceOrderCommandHandler(
-        IMexcService mexcService,
-        IUserRepository userRepository,
-        ILogger<PlaceOrderCommandHandler> logger)
+    public class PlaceOrderCommandHandler : IRequestHandler<PlaceOrderCommand, Result<OrderDto>>
     {
-        _mexcService = mexcService;
-        _userRepository = userRepository;
-        _logger = logger;
-    }
+        private readonly IMexcService _mexcService;
+        private readonly IUserRepository _userRepository;
+        private readonly ILogger<PlaceOrderCommandHandler> _logger;
 
-    public async Task<Result<OrderDto>> Handle(PlaceOrderCommand request, CancellationToken ct)
-    {
-        try
+        public PlaceOrderCommandHandler(
+            IMexcService mexcService,
+            IUserRepository userRepository,
+            ILogger<PlaceOrderCommandHandler> logger)
         {
-            var user = await _userRepository.GetByIdAsync(request.UserId);
-            if (user == null)
-                return Result.Fail("User not found");
-
-            var orderResult = await _mexcService.PlaceOrderAsync(
-                request.Symbol,
-                request.Side,
-                request.Type,
-                request.Side == OrderSide.Buy ? request.Amount : request.Amount,
-                request.Price,
-                ct);
-
-            if (orderResult.IsFailed)
-                return orderResult.ToResult<OrderDto>(); // Изменено здесь
-
-            return Result.Ok(new OrderDto(orderResult.Value));
+            _mexcService = mexcService;
+            _userRepository = userRepository;
+            _logger = logger;
         }
-        catch (Exception ex)
+
+        public async Task<Result<OrderDto>> Handle(PlaceOrderCommand request, CancellationToken ct)
         {
-            _logger.LogError(ex, "Error placing order");
-            return Result.Fail(new Error("Failed to place order").CausedBy(ex));
+            try
+            {
+                var user = await _userRepository.GetByIdAsync(request.UserId);
+                if (user == null)
+                    return Result.Fail("User not found");
+
+                // Для рыночных ордеров цена не требуется
+                decimal price = request.Type == OrderType.Market ? 0 : request.Price ?? 0;
+
+                var orderResult = await _mexcService.PlaceOrderAsync(
+                    symbol: request.Symbol,
+                    side: request.Side,
+                    type: request.Type,  // Теперь передаем OrderType напрямую
+                    quantity: request.Amount,
+                    price: price,
+                    tif: request.TimeInForce,
+                    ct: ct);
+
+                if (orderResult.IsFailed)
+                    return orderResult.ToResult<OrderDto>();
+
+                var order = new Order
+                {
+                    Id = orderResult.Value,
+                    Symbol = request.Symbol,
+                    Side = request.Side,
+                    Type = request.Type,
+                    Quantity = request.Amount,
+                    Price = request.Price,
+                    Status = OrderStatus.New,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                return Result.Ok(new OrderDto(order));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error placing order");
+                return Result.Fail(new Error("Failed to place order").CausedBy(ex));
+            }
         }
     }
 }

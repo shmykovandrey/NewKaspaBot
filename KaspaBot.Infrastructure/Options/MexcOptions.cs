@@ -1,9 +1,10 @@
-﻿namespace KaspaBot.Infrastructure.Options;
-
-public class MexcOptions
+﻿namespace KaspaBot.Infrastructure.Options
 {
-    public const string SectionName = "Mexc";
+    public class MexcOptions
+    {
+        public const string SectionName = "Mexc";
 
-    public string ApiKey { get; set; }
-    public string ApiSecret { get; set; }
+        public required string ApiKey { get; set; }
+        public required string ApiSecret { get; set; }
+    }
 }

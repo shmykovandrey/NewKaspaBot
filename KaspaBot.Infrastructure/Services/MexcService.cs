@@ -1,122 +1,154 @@
-﻿using FluentResults;
-using KaspaBot.Domain.Enums;
+﻿using CryptoExchange.Net.Authentication;
+using FluentResults;
 using KaspaBot.Domain.Interfaces;
-using KaspaBot.Domain.Models;
 using Mexc.Net.Clients;
 using Mexc.Net.Enums;
 using Mexc.Net.Objects;
 using Mexc.Net.Objects.Models.Spot;
-using Mexc.Net.Objects.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace KaspaBot.Infrastructure.Services
 {
     public class MexcService : IMexcService
     {
-        private readonly MexcClient _client;
+        private readonly MexcRestClient _restClient;
+        private readonly MexcSocketClient _socketClient;
         private readonly ILogger<MexcService> _logger;
 
-        public MexcService(IOptions<MexcClientOptions> options, ILogger<MexcService> logger)
+        public MexcService(
+            string apiKey,
+            string apiSecret,
+            ILogger<MexcService> logger)
         {
-            _client = new MexcClient(options.Value);
+            _restClient = new MexcRestClient(options =>
+            {
+                options.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
+            });
+
+            _socketClient = new MexcSocketClient(options =>
+            {
+                options.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
+            });
+
             _logger = logger;
         }
 
-        public async Task<Result<MexcAccountInfo>> GetAccountInfoAsync()
+        public async Task<Result<MexcAccountInfo>> GetAccountInfoAsync(CancellationToken ct = default)
         {
-            var result = await _client.SpotApi.Account.GetAccountInfoAsync();
-            if (!result.Success || result.Data == null)
+            try
             {
-                _logger.LogError("Failed to get account info: {Error}", result.Error?.Message);
-                return Result.Fail<MexcAccountInfo>("Failed to get account info");
+                var result = await _restClient.SpotApi.Account.GetAccountInfoAsync(ct);
+                if (!result.Success || result.Data == null)
+                {
+                    _logger.LogError("Failed to get account info: {Error}", result.Error?.Message);
+                    return Result.Fail<MexcAccountInfo>("Failed to get account info");
+                }
+                return Result.Ok(result.Data);
             }
-
-            return Result.Ok(result.Data);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting account info");
+                return Result.Fail<MexcAccountInfo>(new Error("Failed to get account info").CausedBy(ex));
+            }
         }
 
-        public async Task<Result<decimal>> GetSymbolPriceAsync(string symbol)
+        public async Task<Result<decimal>> GetSymbolPriceAsync(string symbol, CancellationToken ct = default)
         {
-            var result = await _client.SpotApi.ExchangeData.GetPriceAsync(symbol);
-            if (!result.Success || result.Data == null)
+            try
             {
-                _logger.LogError("Failed to get price for symbol {Symbol}: {Error}", symbol, result.Error?.Message);
-                return Result.Fail<decimal>("Failed to get symbol price");
+                var result = await _restClient.SpotApi.ExchangeData.GetTickerAsync(symbol, ct);
+                if (!result.Success || result.Data == null)
+                {
+                    _logger.LogError("Failed to get price for {Symbol}: {Error}", symbol, result.Error?.Message);
+                    return Result.Fail<decimal>("Failed to get symbol price");
+                }
+                return Result.Ok(result.Data.LastPrice);
             }
-
-            return Result.Ok(result.Data.Price);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting price for {Symbol}", symbol);
+                return Result.Fail<decimal>(new Error("Failed to get symbol price").CausedBy(ex));
+            }
         }
 
-        public async Task<Result<OrderId>> PlaceOrderAsync(
-            string symbol,
-            OrderSide side,
-            decimal quantity,
-            decimal price,
-            OrderType type,
-            TimeInForce tif)
+        public async Task<Result<string>> PlaceOrderAsync(
+    string symbol,
+    Mexc.Net.Enums.OrderSide side,
+    Mexc.Net.Enums.OrderType type,
+    decimal quantity,
+    decimal? price = null,
+    Mexc.Net.Enums.TimeInForce tif = Mexc.Net.Enums.TimeInForce.GoodTillCanceled,
+    CancellationToken ct = default)
         {
-            var result = await _client.SpotApi.Trading.PlaceOrderAsync(
-                symbol: symbol,
-                side: side,
-                type: type,
-                quantity: quantity,
-                price: price,
-                timeInForce: tif
-            );
+            var result = await _restClient.SpotApi.Trading.PlaceOrderAsync(
+                symbol,
+                side,
+                type,
+                quantity,
+                price,
+                null, // clientOrderId
+                ct.ToString());
 
-            if (!result.Success || result.Data == null)
-            {
-                _logger.LogError("Failed to place order: {Error}", result.Error?.Message);
-                return Result.Fail<OrderId>("Failed to place order");
-            }
-
-            return Result.Ok(new OrderId { Id = result.Data.OrderId.ToString() });
+            return result.Success
+                ? Result.Ok(result.Data.OrderId.ToString())
+                : Result.Fail<string>(result.Error?.Message ?? "Failed to place order");
         }
 
-        public async Task<Result<IEnumerable<MexcOrder>>> GetOpenOrdersAsync(string symbol)
+        public async Task<Result<IEnumerable<MexcOrder>>> GetOpenOrdersAsync(string symbol, CancellationToken ct = default)
         {
-            var result = await _client.SpotApi.Trading.GetOpenOrdersAsync(symbol);
-            if (!result.Success || result.Data == null)
+            try
             {
-                _logger.LogError("Failed to get open orders for symbol {Symbol}: {Error}", symbol, result.Error?.Message);
-                return Result.Fail<IEnumerable<MexcOrder>>("Failed to get open orders");
+                var result = await _restClient.SpotApi.Trading.GetOpenOrdersAsync(symbol, ct);
+                if (!result.Success || result.Data == null)
+                {
+                    _logger.LogError("Failed to get open orders for {Symbol}: {Error}", symbol, result.Error?.Message);
+                    return Result.Fail<IEnumerable<MexcOrder>>("Failed to get open orders");
+                }
+                return Result.Ok((IEnumerable<MexcOrder>)result.Data);
             }
-
-            return Result.Ok(result.Data);
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting open orders for {Symbol}", symbol);
+                return Result.Fail<IEnumerable<MexcOrder>>(new Error("Failed to get open orders").CausedBy(ex));
+            }
         }
 
-        public async Task<Result<MexcOrder>> GetOrderAsync(string symbol, string orderId)
+        public async Task<Result<Mexc.Net.Objects.Models.Spot.MexcOrder>> GetOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
-            if (!long.TryParse(orderId, out long id))
-            {
-                return Result.Fail<MexcOrder>("Invalid order ID format");
-            }
-
-            var result = await _client.SpotApi.Trading.GetOrderAsync(symbol, id);
-            if (!result.Success || result.Data == null)
-            {
-                _logger.LogError("Failed to get order {OrderId} for {Symbol}: {Error}", orderId, symbol, result.Error?.Message);
-                return Result.Fail<MexcOrder>("Failed to get order");
-            }
-
-            return Result.Ok(result.Data);
+            var result = await _restClient.SpotApi.Trading.GetOrderAsync(orderId, symbol, ct.ToString());
+            return result.Success
+                ? Result.Ok(result.Data)
+                : Result.Fail<Mexc.Net.Objects.Models.Spot.MexcOrder>(result.Error?.Message ?? "Failed to get order");
         }
 
-        public async Task<Result<bool>> CancelOrderAsync(string symbol, string orderId)
+        public async Task<Result<bool>> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
-            if (!long.TryParse(orderId, out long id))
+            try
             {
-                return Result.Fail<bool>("Invalid order ID format");
-            }
+                if (!long.TryParse(orderId, out var id))
+                {
+                    _logger.LogError("Invalid order ID format: {OrderId}", orderId);
+                    return Result.Fail<bool>("Invalid order ID format");
+                }
 
-            var result = await _client.SpotApi.Trading.CancelOrderAsync(symbol, id);
-            if (!result.Success)
+                var result = await _restClient.SpotApi.Trading.CancelOrderAsync(symbol, id.ToString(), ct.ToString());
+                if (!result.Success)
+                {
+                    _logger.LogError("Failed to cancel order {OrderId} for {Symbol}: {Error}", orderId, symbol, result.Error?.Message);
+                    return Result.Fail<bool>("Failed to cancel order");
+                }
+
+                return Result.Ok(true);
+            }
+            catch (Exception ex)
             {
-                _logger.LogError("Failed to cancel order {OrderId} for {Symbol}: {Error}", orderId, symbol, result.Error?.Message);
-                return Result.Fail<bool>("Failed to cancel order");
+                _logger.LogError(ex, "Error canceling order {OrderId} for {Symbol}", orderId, symbol);
+                return Result.Fail<bool>(new Error("Failed to cancel order").CausedBy(ex));
             }
-
-            return Result.Ok(true);
         }
     }
 }

@@ -1,20 +1,17 @@
-using KaspaBot.Presentation.Telegram.CommandHandlers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Telegram.Bot;
-
-namespace KaspaBot.Presentation.Telegram;
+using Telegram.Bot.Polling;
 
 public static class TelegramBotExtensions
 {
     public static IServiceCollection AddTelegramBot(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddSingleton<ITelegramBotClient>(_ =>
-            new TelegramBotClient(configuration["Telegram:Token"]));
+        var token = configuration["Telegram:Token"] ??
+            throw new ArgumentNullException("Telegram token is not configured");
 
-        services.AddScoped<TradingCommandHandler>();
-
-        // Добавим хостинг Telegram-пула
+        services.AddSingleton<ITelegramBotClient>(new TelegramBotClient(token));
+        services.AddSingleton<IUpdateHandler, TelegramUpdateHandler>();
         services.AddHostedService<TelegramPollingService>();
 
         return services;
