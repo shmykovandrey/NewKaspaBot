@@ -8,4 +8,5 @@ public class OrderPair
     public DateTime CreatedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public decimal? Profit { get; set; }
+    public long UserId { get; set; }
 }

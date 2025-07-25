@@ -22,5 +22,7 @@ namespace KaspaBot.Domain.Interfaces
         Task<Result<IEnumerable<MexcOrder>>> GetOpenOrdersAsync(string symbol, CancellationToken ct = default);
         Task<Result<MexcOrder>> GetOrderAsync(string symbol, string orderId, CancellationToken ct = default);
         Task<Result<bool>> CancelOrderAsync(string symbol, string orderId, CancellationToken ct = default);
+        Task<Result<string>> GetListenKeyAsync(CancellationToken ct = default);
+        Task<Result<(decimal Maker, decimal Taker)>> GetTradeFeeAsync(string symbol, CancellationToken ct = default);
     }
 }

@@ -3,6 +3,7 @@ using System;
 using KaspaBot.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace KaspaBot.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250724165920_InitialCreate")]
+    partial class InitialCreate
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "8.0.6");
@@ -202,12 +205,6 @@ namespace KaspaBot.Infrastructure.Migrations
                             b1.Property<bool>("EnableAutoTrading")
                                 .HasColumnType("INTEGER")
                                 .HasColumnName("Settings_EnableAutoTrading");
-
-                            b1.Property<bool>("IsAutoTradeEnabled")
-                                .HasColumnType("INTEGER");
-
-                            b1.Property<decimal?>("LastDcaBuyPrice")
-                                .HasColumnType("TEXT");
 
                             b1.Property<decimal>("MaxUsdtUsing")
                                 .HasColumnType("TEXT");

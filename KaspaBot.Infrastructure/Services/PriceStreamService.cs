@@ -1,4 +1,5 @@
-﻿using CryptoExchange.Net.Objects.Sockets;
+﻿//PriceStreamService.cs
+using CryptoExchange.Net.Objects.Sockets;
 using CryptoExchange.Net.Sockets;
 using KaspaBot.Domain.Interfaces;
 using Mexc.Net.Clients;

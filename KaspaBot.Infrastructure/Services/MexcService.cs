@@ -1,4 +1,5 @@
-﻿using CryptoExchange.Net.Authentication;
+﻿//MexcService.cs
+using CryptoExchange.Net.Authentication;
 using FluentResults;
 using KaspaBot.Domain.Interfaces;
 using Mexc.Net.Clients;
@@ -10,13 +11,14 @@ using Microsoft.Extensions.Options;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace KaspaBot.Infrastructure.Services
 {
     public class MexcService : IMexcService
     {
         private readonly MexcRestClient _restClient;
-        private readonly MexcSocketClient _socketClient;
+        public readonly MexcSocketClient _socketClient;
         private readonly ILogger<MexcService> _logger;
 
         public MexcService(
@@ -27,6 +29,7 @@ namespace KaspaBot.Infrastructure.Services
             _restClient = new MexcRestClient(options =>
             {
                 options.ApiCredentials = new ApiCredentials(apiKey, apiSecret);
+                options.AutoTimestamp = true;
             });
 
             _socketClient = new MexcSocketClient(options =>
@@ -76,26 +79,41 @@ namespace KaspaBot.Infrastructure.Services
         }
 
         public async Task<Result<string>> PlaceOrderAsync(
-    string symbol,
-    Mexc.Net.Enums.OrderSide side,
-    Mexc.Net.Enums.OrderType type,
-    decimal quantity,
-    decimal? price = null,
-    Mexc.Net.Enums.TimeInForce tif = Mexc.Net.Enums.TimeInForce.GoodTillCanceled,
-    CancellationToken ct = default)
+            string symbol,
+            Mexc.Net.Enums.OrderSide side,
+            Mexc.Net.Enums.OrderType type,
+            decimal amount,
+            decimal? price = null,
+            Mexc.Net.Enums.TimeInForce tif = Mexc.Net.Enums.TimeInForce.GoodTillCanceled,
+            CancellationToken ct = default)
         {
-            var result = await _restClient.SpotApi.Trading.PlaceOrderAsync(
-                symbol,
-                side,
-                type,
-                quantity,
-                price,
-                null, // clientOrderId
-                ct.ToString());
-
-            return result.Success
-                ? Result.Ok(result.Data.OrderId.ToString())
-                : Result.Fail<string>(result.Error?.Message ?? "Failed to place order");
+            // Маркет-бай через сумму (quoteOrderQty)
+            if (type == Mexc.Net.Enums.OrderType.Market && side == Mexc.Net.Enums.OrderSide.Buy)
+            {
+                var result = await _restClient.SpotApi.Trading.PlaceOrderAsync(
+                    symbol: symbol,
+                    side: side,
+                    type: type,
+                    quantity: null,
+                    quoteQuantity: amount,
+                    ct: ct
+                );
+                return result.Success
+                    ? Result.Ok(result.Data.OrderId.ToString())
+                    : Result.Fail<string>(result.Error?.Message ?? "Failed to place order");
+            }
+            // Для LIMIT и MARKET SELL — только рабочая перегрузка
+            var normalResult = await _restClient.SpotApi.Trading.PlaceOrderAsync(
+                symbol: symbol,
+                side: side,
+                type: type,
+                quantity: amount,
+                price: price,
+                ct: ct
+            );
+            return normalResult.Success
+                ? Result.Ok(normalResult.Data.OrderId.ToString())
+                : Result.Fail<string>(normalResult.Error?.Message ?? "Failed to place order");
         }
 
         public async Task<Result<IEnumerable<MexcOrder>>> GetOpenOrdersAsync(string symbol, CancellationToken ct = default)
@@ -119,7 +137,7 @@ namespace KaspaBot.Infrastructure.Services
 
         public async Task<Result<Mexc.Net.Objects.Models.Spot.MexcOrder>> GetOrderAsync(string symbol, string orderId, CancellationToken ct = default)
         {
-            var result = await _restClient.SpotApi.Trading.GetOrderAsync(orderId, symbol, ct.ToString());
+            var result = await _restClient.SpotApi.Trading.GetOrderAsync(symbol, orderId, ct.ToString());
             return result.Success
                 ? Result.Ok(result.Data)
                 : Result.Fail<Mexc.Net.Objects.Models.Spot.MexcOrder>(result.Error?.Message ?? "Failed to get order");
@@ -148,6 +166,67 @@ namespace KaspaBot.Infrastructure.Services
             {
                 _logger.LogError(ex, "Error canceling order {OrderId} for {Symbol}", orderId, symbol);
                 return Result.Fail<bool>(new Error("Failed to cancel order").CausedBy(ex));
+            }
+        }
+
+        public async Task<Result<string>> GetListenKeyAsync(CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _restClient.SpotApi.Account.StartUserStreamAsync(ct);
+                if (!result.Success || string.IsNullOrEmpty(result.Data))
+                {
+                    _logger.LogError("Failed to get listenKey: {Error}", result.Error?.Message);
+                    return Result.Fail<string>("Failed to get listenKey");
+                }
+                return Result.Ok(result.Data);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting listenKey");
+                return Result.Fail<string>(new Error("Failed to get listenKey").CausedBy(ex));
+            }
+        }
+
+        public async Task<Result<IEnumerable<Mexc.Net.Objects.Models.Spot.MexcUserTrade>>> GetOrderTradesAsync(string symbol, string orderId, CancellationToken ct = default)
+        {
+            var tradesResult = await _restClient.SpotApi.Trading.GetUserTradesAsync(symbol, orderId: orderId, ct: ct);
+            if (!tradesResult.Success || tradesResult.Data == null)
+                return Result.Fail<IEnumerable<Mexc.Net.Objects.Models.Spot.MexcUserTrade>>(tradesResult.Error?.Message ?? "Failed to get trades");
+            return Result.Ok(tradesResult.Data.AsEnumerable());
+        }
+
+        public async Task<decimal> GetTickSizeAsync(string symbol, CancellationToken ct = default)
+        {
+            var result = await _restClient.SpotApi.ExchangeData.GetExchangeInfoAsync(new[] { symbol }, ct);
+            if (result.Success && result.Data != null)
+            {
+                var symbolInfo = result.Data.Symbols.FirstOrDefault(s => s.Name == symbol);
+                if (symbolInfo != null)
+                {
+                    _logger.LogError($"[SELL DEBUG] MexcSymbol: {System.Text.Json.JsonSerializer.Serialize(symbolInfo)}");
+                }
+            }
+            return 0.000001m; // fallback
+        }
+
+        public async Task<Result<(decimal Maker, decimal Taker)>> GetTradeFeeAsync(string symbol, CancellationToken ct = default)
+        {
+            try
+            {
+                // Mexc.Net >= 1.2.5: SpotApi.Account.GetTradeFeeAsync
+                var result = await _restClient.SpotApi.Account.GetTradeFeeAsync(symbol, ct);
+                if (!result.Success || result.Data == null)
+                {
+                    _logger.LogError("Failed to get trade fee for {Symbol}: {Error}", symbol, result.Error?.Message);
+                    return Result.Fail<(decimal, decimal)>("Failed to get trade fee");
+                }
+                return Result.Ok((result.Data.MakerFee, result.Data.TakerFee));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting trade fee for {Symbol}", symbol);
+                return Result.Fail<(decimal, decimal)>(new Error("Failed to get trade fee").CausedBy(ex));
             }
         }
     }

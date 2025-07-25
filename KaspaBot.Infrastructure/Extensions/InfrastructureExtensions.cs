@@ -2,12 +2,15 @@ using CryptoExchange.Net.Authentication;
 using KaspaBot.Domain.Interfaces;
 using KaspaBot.Infrastructure.Options;
 using KaspaBot.Infrastructure.Services;
+using KaspaBot.Infrastructure.Repositories;
+using KaspaBot.Infrastructure.Persistence;
 using MediatR;
 using Mexc.Net.Clients;
 using Mexc.Net.Interfaces.Clients;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;
 
 namespace KaspaBot.Infrastructure.Extensions
 {
@@ -33,11 +36,19 @@ namespace KaspaBot.Infrastructure.Extensions
             });
 
             // Регистрация сервисов
-            services.AddScoped<IMexcService, MexcService>();
+            // services.AddScoped<IMexcService, MexcService>();
             services.AddScoped<IPriceStreamService, PriceStreamService>();
+            services.AddScoped<IUserRepository, UserRepository>();
+            services.AddScoped<OrderPairRepository>();
+            services.AddSingleton<EncryptionService>();
+            services.AddSingleton<UserStreamManager>();
 
             // Регистрация MediatR (упрощенная версия)
             services.AddMediatR(typeof(InfrastructureExtensions).Assembly);
+
+            // Регистрация ApplicationDbContext
+            services.AddDbContext<ApplicationDbContext>(options =>
+                options.UseSqlite(configuration.GetConnectionString("DefaultConnection")));
 
             return services;
         }
