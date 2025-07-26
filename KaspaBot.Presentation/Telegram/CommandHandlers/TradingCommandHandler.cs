@@ -34,7 +34,7 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             _serviceProvider = serviceProvider;
         }
 
-        public async Task HandleAutotradeOnCommand(Message message, CancellationToken cancellationToken)
+        public async Task HandleAutotradeCommand(Message message, CancellationToken cancellationToken)
         {
             var userId = message.Chat.Id;
             using var scope = _serviceProvider.CreateScope();
@@ -45,24 +45,10 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
                 await _botClient.SendMessage(chatId: userId, text: "Пользователь не найден", cancellationToken: cancellationToken);
                 return;
             }
-            user.Settings.IsAutoTradeEnabled = true;
+            user.Settings.IsAutoTradeEnabled = !user.Settings.IsAutoTradeEnabled;
             await userRepository.UpdateAsync(user);
-            await _botClient.SendMessage(chatId: userId, text: "Автоторговля включена", cancellationToken: cancellationToken);
-        }
-        public async Task HandleAutotradeOffCommand(Message message, CancellationToken cancellationToken)
-        {
-            var userId = message.Chat.Id;
-            using var scope = _serviceProvider.CreateScope();
-            var userRepository = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>();
-            var user = await userRepository.GetByIdAsync(userId);
-            if (user == null)
-            {
-                await _botClient.SendMessage(chatId: userId, text: "Пользователь не найден", cancellationToken: cancellationToken);
-                return;
-            }
-            user.Settings.IsAutoTradeEnabled = false;
-            await userRepository.UpdateAsync(user);
-            await _botClient.SendMessage(chatId: userId, text: "Автоторговля выключена", cancellationToken: cancellationToken);
+            var status = user.Settings.IsAutoTradeEnabled ? "включена" : "выключена";
+            await _botClient.SendMessage(chatId: userId, text: $"Автоторговля {status}", cancellationToken: cancellationToken);
         }
 
         public async Task HandleBuyCommand(Message message, CancellationToken cancellationToken)
@@ -210,9 +196,8 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
                 return;
             }
             // 6. Информируем пользователя
-            var profit = (sellOrder.Price.GetValueOrDefault() * sellQty) - (buyQty * buyPrice) - totalCommission;
-            var msg = $"КУПЛЕНО\n\n{buyQty:F2} KAS по {buyPrice:F6} USDT\n\nПотрачено\n{(buyQty * buyPrice):F8} USDT\n\nКомиссия: {totalCommission} {commissionAsset}\n\nВЫСТАВЛЕНО\n\n{buyQty:F2} KAS по {sellOrder.Price:F6} USDT\n\nПРИБЫЛЬ (чистая): {profit:F8} USDT";
-            await _botClient.SendMessage(chatId: userId, text: msg, cancellationToken: cancellationToken);
+            var stdMsg = $"КУПЛЕНО\n\n{buyQty:F2} KAS по {buyPrice:F6} USDT\n\nПотрачено\n{(buyQty * buyPrice):F8} USDT\n\nВЫСТАВЛЕНО\n\n{sellQty:F2} KAS по {sellOrder.Price:F6} USDT";
+            await _botClient.SendMessage(chatId: userId, text: stdMsg, cancellationToken: cancellationToken);
 
             // После успешной покупки:
             // Если автоторговля включена — обновить цену последнего buy-ордера для DCA
@@ -357,7 +342,7 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             }
             var allPairs = await orderPairRepo.GetAllAsync();
             var sellOrders = allPairs
-                .Where(p => p.UserId == userId && !string.IsNullOrEmpty(p.SellOrder.Id))
+                .Where(p => p.UserId == userId && !string.IsNullOrEmpty(p.SellOrder.Id) && p.SellOrder.Status != OrderStatus.Filled && p.SellOrder.Quantity > 0)
                 .Select(p => p.SellOrder)
                 .ToList();
             if (sellOrders.Count == 0)
@@ -680,12 +665,23 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
         public async Task HandleWipeUserCommand(Message message, CancellationToken cancellationToken)
         {
             var userId = message.Chat.Id;
+            _logger.LogWarning($"[WIPE-DEBUG] Старт удаления ордеров пользователя {userId}");
             using var scope = _serviceProvider.CreateScope();
             var userRepository = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>();
             var orderPairRepo = scope.ServiceProvider.GetRequiredService<OrderPairRepository>();
             await orderPairRepo.DeleteByUserId(userId);
+            _logger.LogWarning($"[WIPE-DEBUG] Удаление ордеров пользователя {userId} завершено");
             await userRepository.DeleteAsync(userId);
+            _logger.LogWarning($"[WIPE-DEBUG] Пользователь {userId} удалён");
             await _botClient.SendMessage(chatId: userId, text: "Пользователь и все сделки удалены.", cancellationToken: cancellationToken);
+        }
+
+        public async Task HandleOrderRecoveryCommand(Message message, CancellationToken cancellationToken)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var recovery = scope.ServiceProvider.GetRequiredService<OrderRecoveryService>();
+            await recovery.RunRecoveryForUser(message.Chat.Id, cancellationToken);
+            await _botClient.SendMessage(chatId: message.Chat.Id, text: "Восстановление ордеров завершено.", cancellationToken: cancellationToken);
         }
     }
 }

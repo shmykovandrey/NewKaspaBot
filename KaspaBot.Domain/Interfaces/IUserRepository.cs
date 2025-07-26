@@ -9,4 +9,5 @@ public interface IUserRepository
     Task UpdateAsync(User user);
     Task<List<User>> GetAllAsync();
     Task<bool> ExistsAsync(long userId);
+    Task DeleteAsync(long userId);
 }

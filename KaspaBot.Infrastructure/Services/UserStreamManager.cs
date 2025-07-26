@@ -8,6 +8,7 @@ using System;
 using System.Linq;
 using KaspaBot.Infrastructure.Repositories;
 using System.Collections.Generic;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KaspaBot.Infrastructure.Services
 {
@@ -18,18 +19,24 @@ namespace KaspaBot.Infrastructure.Services
         private readonly ConcurrentDictionary<long, string> _listenKeys = new();
         private readonly ConcurrentDictionary<long, IMexcService> _userMexcServices = new();
         private readonly ILoggerFactory _loggerFactory;
+        private readonly IServiceProvider _serviceProvider;
+        private readonly IOrderRecoveryService _orderRecoveryService;
         public delegate Task OrderSoldHandler(long userId, decimal qty, decimal price, decimal usdt, decimal profit);
         public event OrderSoldHandler? OnOrderSold;
         private readonly OrderPairRepository _orderPairRepo;
         private readonly ConcurrentDictionary<long, CancellationTokenSource> _debounceCtsPerUser = new();
         private readonly object _debounceLock = new();
+        private readonly KaspaBot.Domain.Interfaces.IBotMessenger _botMessenger;
 
-        public UserStreamManager(IUserRepository userRepository, ILogger<UserStreamManager> logger, ILoggerFactory loggerFactory, OrderPairRepository orderPairRepo)
+        public UserStreamManager(IUserRepository userRepository, ILogger<UserStreamManager> logger, ILoggerFactory loggerFactory, OrderPairRepository orderPairRepo, IServiceProvider serviceProvider, IOrderRecoveryService orderRecoveryService, KaspaBot.Domain.Interfaces.IBotMessenger botMessenger)
         {
             _userRepository = userRepository;
             _logger = logger;
             _loggerFactory = loggerFactory;
             _orderPairRepo = orderPairRepo;
+            _serviceProvider = serviceProvider;
+            _orderRecoveryService = orderRecoveryService;
+            _botMessenger = botMessenger;
         }
 
         public async Task InitializeAllAsync(CancellationToken cancellationToken = default)
@@ -189,6 +196,7 @@ namespace KaspaBot.Infrastructure.Services
                 await Task.Delay(TimeSpan.FromSeconds(30), token);
                 // После 30 секунд тишины — делаем автопару
                 await CreateAutoPairForUser(user);
+                await _orderRecoveryService.RunRecoveryForUser(user.Id, CancellationToken.None);
             }
             catch (TaskCanceledException) { /* дебаунс перезапущен */ }
         }
@@ -261,6 +269,10 @@ namespace KaspaBot.Infrastructure.Services
                 orderPair.SellOrder.Status = Mexc.Net.Enums.OrderStatus.New;
                 orderPair.SellOrder.CreatedAt = DateTime.UtcNow;
                 await _orderPairRepo.UpdateAsync(orderPair);
+
+                // Отправить сообщение пользователю
+                var msg = $"КУПЛЕНО\n\n{buyQty:F2} KAS по {buyPrice:F6} USDT\n\nПотрачено\n{(buyQty * buyPrice):F8} USDT\n\nВЫСТАВЛЕНО\n\n{buyQty:F2} KAS по {sellPrice:F6} USDT";
+                await _botMessenger.SendMessage(user.Id, msg);
             }
         }
     }

@@ -124,7 +124,7 @@ public class TelegramUpdateHandler : IUpdateHandler
                                 },
                                 Settings = new KaspaBot.Domain.ValueObjects.UserSettings
                                 {
-                                    OrderAmount = 5m, // Сумма ордера в USDT
+                                    OrderAmount = 1m, // Сумма ордера в USDT
                                     MaxUsdtUsing = 200m, // Максимальная сумма для торговли
                                     PercentPriceChange = 0.5m, // Процент падения цены для покупки
                                     PercentProfit = 0.5m // Процент для продажи
@@ -141,8 +141,12 @@ public class TelegramUpdateHandler : IUpdateHandler
                                 cancellationToken: cancellationToken);
                             await botClient.SendMessage(
                                 chatId: userId,
+                                text: "Автоторговля по умолчанию выключена. Для включения используйте команду /autotrade",
+                                cancellationToken: cancellationToken);
+                            await botClient.SendMessage(
+                                chatId: userId,
                                 text: "Ваши дефолтные настройки:\n" +
-                                      "Сумма ордера: 5 USDT\n" +
+                                      "Сумма ордера: 1 USDT\n" +
                                       "Максимальная сумма: 200 USDT\n" +
                                       "% падения: 0.5%\n" +
                                       "% прибыли: 0.5%\n" +
@@ -474,16 +478,10 @@ public class TelegramUpdateHandler : IUpdateHandler
                     }
                     return;
                 }
-                // /autotrade_on — включить автоторговлю
-                else if (text.Equals("/autotrade_on", StringComparison.OrdinalIgnoreCase))
+                // /autotrade — включить/выключить автоторговлю
+                else if (text.Equals("/autotrade", StringComparison.OrdinalIgnoreCase))
                 {
-                    await tradingCommandHandler.HandleAutotradeOnCommand(update.Message, cancellationToken);
-                    return;
-                }
-                // /autotrade_off — выключить автоторговлю
-                else if (text.Equals("/autotrade_off", StringComparison.OrdinalIgnoreCase))
-                {
-                    await tradingCommandHandler.HandleAutotradeOffCommand(update.Message, cancellationToken);
+                    await tradingCommandHandler.HandleAutotradeCommand(update.Message, cancellationToken);
                     return;
                 }
                 // /profit — получить прибыль
@@ -498,19 +496,12 @@ public class TelegramUpdateHandler : IUpdateHandler
                     var parts = text.Split(' ', 2);
                     if (parts.Length == 2 && long.TryParse(parts[1], out var targetUserId))
                     {
-                        var userToDelete = await userRepository.GetByIdAsync(targetUserId);
-                        if (userToDelete != null)
-                        {
-                            // Удалить пользователя из базы
-                            var db = scope.ServiceProvider.GetRequiredService<KaspaBot.Infrastructure.Persistence.ApplicationDbContext>();
-                            db.Users.Remove(userToDelete);
-                            await db.SaveChangesAsync();
-                            await botClient.SendMessage(chatId: userId, text: $"Пользователь {targetUserId} удалён.", cancellationToken: cancellationToken);
-                        }
-                        else
-                        {
-                            await botClient.SendMessage(chatId: userId, text: $"Пользователь {targetUserId} не найден.", cancellationToken: cancellationToken);
-                        }
+                        // Вместо прямого удаления вызываем handler с подменой chat.Id
+                        var wipeMsg = new Telegram.Bot.Types.Message {
+                            Chat = new Telegram.Bot.Types.Chat { Id = targetUserId }
+                        };
+                        await tradingCommandHandler.HandleWipeUserCommand(wipeMsg, cancellationToken);
+                        await botClient.SendMessage(chatId: userId, text: $"Пользователь {targetUserId} удалён.", cancellationToken: cancellationToken);
                     }
                     else
                     {
@@ -531,6 +522,11 @@ public class TelegramUpdateHandler : IUpdateHandler
                 else if (text.StartsWith("/cancel_orders"))
                 {
                     await tradingCommandHandler.HandleCancelOrdersCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.Equals("/order_recovery", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleOrderRecoveryCommand(update.Message, cancellationToken);
                     return;
                 }
                 else

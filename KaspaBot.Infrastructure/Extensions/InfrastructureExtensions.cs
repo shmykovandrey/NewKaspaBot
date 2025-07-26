@@ -11,6 +11,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace KaspaBot.Infrastructure.Extensions
 {
@@ -41,7 +42,17 @@ namespace KaspaBot.Infrastructure.Extensions
             services.AddScoped<IUserRepository, UserRepository>();
             services.AddScoped<OrderPairRepository>();
             services.AddSingleton<EncryptionService>();
-            services.AddSingleton<UserStreamManager>();
+            services.AddSingleton<UserStreamManager>(provider =>
+            {
+                var userRepo = provider.GetRequiredService<IUserRepository>();
+                var logger = provider.GetRequiredService<ILogger<UserStreamManager>>();
+                var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
+                var orderPairRepo = provider.GetRequiredService<OrderPairRepository>();
+                var serviceProvider = provider;
+                var orderRecovery = provider.GetRequiredService<KaspaBot.Domain.Interfaces.IOrderRecoveryService>();
+                var botMessenger = provider.GetRequiredService<KaspaBot.Domain.Interfaces.IBotMessenger>();
+                return new UserStreamManager(userRepo, logger, loggerFactory, orderPairRepo, serviceProvider, orderRecovery, botMessenger);
+            });
 
             // Регистрация MediatR (упрощенная версия)
             services.AddMediatR(typeof(InfrastructureExtensions).Assembly);

@@ -4,15 +4,18 @@ using System.Threading.Tasks;
 using KaspaBot.Domain.Entities;
 using KaspaBot.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace KaspaBot.Infrastructure.Repositories
 {
     public class OrderPairRepository
     {
         private readonly ApplicationDbContext _context;
-        public OrderPairRepository(ApplicationDbContext context)
+        private readonly ILogger<OrderPairRepository> _logger;
+        public OrderPairRepository(ApplicationDbContext context, ILogger<OrderPairRepository> logger)
         {
             _context = context;
+            _logger = logger;
         }
         public async Task AddAsync(OrderPair pair)
         {
@@ -47,9 +50,11 @@ namespace KaspaBot.Infrastructure.Repositories
         }
         public async Task DeleteByUserId(long userId)
         {
-            var pairs = _context.OrderPairs.Where(p => p.UserId == userId);
+            var pairs = await _context.OrderPairs.Where(p => p.UserId == userId).ToListAsync();
+            _logger.LogInformation($"[ORDERPAIR-DELETE] userId={userId} найдено пар: {pairs.Count}");
             _context.OrderPairs.RemoveRange(pairs);
-            await _context.SaveChangesAsync();
+            var deleted = await _context.SaveChangesAsync();
+            _logger.LogInformation($"[ORDERPAIR-DELETE] userId={userId} удалено записей: {deleted}");
         }
     }
 } 

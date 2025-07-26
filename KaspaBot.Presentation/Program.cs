@@ -54,8 +54,11 @@ var builder = Host.CreateDefaultBuilder(args)
         services.AddHostedService<AdminShutdownNotifier>();
         // Восстановление статусов ордеров
         services.AddHostedService<OrderRecoveryService>();
+        services.AddSingleton<OrderRecoveryService>();
+        services.AddSingleton<IOrderRecoveryService>(sp => sp.GetRequiredService<OrderRecoveryService>());
         // DCA автоторговля
         services.AddHostedService<DcaBuyService>();
+        services.AddSingleton<IBotMessenger, KaspaBot.Presentation.Telegram.BotMessenger>();
     })
     .UseSerilog((context, config) =>
     {
