@@ -529,6 +529,36 @@ public class TelegramUpdateHandler : IUpdateHandler
                     await tradingCommandHandler.HandleOrderRecoveryCommand(update.Message, cancellationToken);
                     return;
                 }
+                else if (text.Equals("/fee", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleFeeCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.Equals("/close_all", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleCloseAllOrdersCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.Equals("/commands", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleCommandsListCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.Equals("/ws_status", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleWebSocketStatusCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.StartsWith("/reset_canceled", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleResetCanceledOrdersCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.StartsWith("/check_order", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleCheckOrderStatusCommand(update.Message, cancellationToken);
+                    return;
+                }
                 else
                 {
                     await botClient.SendMessage(
