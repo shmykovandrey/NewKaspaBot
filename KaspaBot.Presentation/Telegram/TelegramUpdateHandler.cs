@@ -424,7 +424,7 @@ public class TelegramUpdateHandler : IUpdateHandler
                 }
                 else if (text.Equals("/stat", StringComparison.OrdinalIgnoreCase))
                 {
-                    await tradingCommandHandler.HandleStatCommand(update.Message, cancellationToken);
+                    await tradingCommandHandler.HandleStatusCommand(update.Message, cancellationToken);
                     return;
                 }
                 // /balance — получить баланс пользователя

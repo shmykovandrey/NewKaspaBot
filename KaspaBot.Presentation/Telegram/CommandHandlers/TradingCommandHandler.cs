@@ -13,6 +13,7 @@ using KaspaBot.Domain.Entities;
 using Microsoft.Extensions.DependencyInjection;
 using KaspaBot.Domain.Interfaces;
 using System.Reflection;
+using System.Text;
 
 namespace KaspaBot.Presentation.Telegram.CommandHandlers
 {
@@ -316,13 +317,13 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
                 await _botClient.SendMessage(chatId: userId, text: "Нет активных ордеров на продажу", cancellationToken: cancellationToken);
                 return;
             }
-            var sellOrders = userPairs.Where(p => p.SellOrder.Status == OrderStatus.New).ToList();
+            var sellOrders = userPairs.Where(p => p.SellOrder.Status == OrderStatus.New).Select(p => p.SellOrder).ToList();
             if (!sellOrders.Any())
             {
                 await _botClient.SendMessage(chatId: userId, text: "Нет активных ордеров на продажу", cancellationToken: cancellationToken);
                 return;
             }
-            var totalSum = sellOrders.Sum(p => p.SellOrder.Quantity * (p.SellOrder.Price ?? 0m));
+            var totalSum = sellOrders.Sum(o => o.Quantity * (o.Price ?? 0m));
             var currentPrice = await mexcService.GetSymbolPriceAsync("KASUSDT", cancellationToken);
             var currentPriceValue = currentPrice.IsSuccess ? currentPrice.Value : 0m;
             var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 Автоторговля включена" : "🔴 Автоторговля выключена";
@@ -343,48 +344,7 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             await _botClient.SendMessage(chatId: userId, text: text, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
         }
 
-        [BotCommand("Таблица открытых ордеров")]
-        public async Task HandleStatCommand(Message message, CancellationToken cancellationToken)
-        {
-            var userId = message.Chat.Id;
-            using var scope = _serviceProvider.CreateScope();
-            var orderPairRepo = scope.ServiceProvider.GetRequiredService<OrderPairRepository>();
-            var mexcLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<MexcService>();
-            var user = await scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>().GetByIdAsync(userId);
-            if (user == null)
-            {
-                await _botClient.SendMessage(chatId: userId, text: "Пользователь не найден", cancellationToken: cancellationToken);
-                return;
-            }
-            var mexcService = new MexcService(user.ApiCredentials.ApiKey, user.ApiCredentials.ApiSecret, mexcLogger);
-            var allPairs = await orderPairRepo.GetAllAsync();
-            var userPairs = allPairs.Where(p => p.UserId == userId && !string.IsNullOrEmpty(p.SellOrder.Id)).ToList();
-            var sellOrders = userPairs.Select(p => p.SellOrder).Where(o => o.Status == OrderStatus.New).OrderByDescending(o => o.Price).ToList();
-            if (!sellOrders.Any())
-            {
-                await _botClient.SendMessage(chatId: userId, text: "У вас нет открытых ордеров на продажу.", cancellationToken: cancellationToken);
-                return;
-            }
-            var currentPriceResult = await mexcService.GetSymbolPriceAsync("KASUSDT", cancellationToken);
-            var currentPrice = currentPriceResult.IsSuccess ? currentPriceResult.Value : 0m;
-            var totalSum = sellOrders.Sum(o => o.Quantity * o.Price.GetValueOrDefault());
-            var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 Автоторговля включена" : "🔴 Автоторговля выключена";
-            var autoBuyInfo = "";
-            if (user.Settings.IsAutoTradeEnabled && user.Settings.LastDcaBuyPrice.HasValue)
-            {
-                var priceChange = 100m * (currentPrice - user.Settings.LastDcaBuyPrice.Value) / user.Settings.LastDcaBuyPrice.Value;
-                autoBuyInfo = $"\n\ud83d\udcc9 До автопокупки: {priceChange:F2}% (реальная цель: {user.Settings.PercentPriceChange:F6})";
-            }
-            var rows = sellOrders.Select((o, i) => (
-                Index: i + 1,
-                Qty: o.Quantity,
-                Price: o.Price.GetValueOrDefault(),
-                Sum: o.Quantity * o.Price.GetValueOrDefault(),
-                Deviation: currentPrice > 0 ? 100m * (o.Price.GetValueOrDefault() - currentPrice) / currentPrice : 0m
-            )).ToList();
-            var text = NotificationFormatter.StatTable(rows, totalSum, currentPrice, autotradeStatus, autoBuyInfo, sellOrders.Count);
-            await _botClient.SendMessage(chatId: userId, text: text, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
-        }
+
 
         [BotCommand("Таблица профита")]
         public async Task HandleProfitCommand(Message message, CancellationToken cancellationToken)
@@ -855,59 +815,88 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
         public async Task HandleCheckOrderStatusCommand(Message message, CancellationToken cancellationToken)
         {
             var userId = message.Chat.Id;
-            var text = message.Text?.Trim();
-            var parts = text?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var parts = message.Text?.Trim()?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            
             if (parts == null || parts.Length < 2)
             {
-                await _botClient.SendMessage(chatId: userId, text: "Используй: /check_order {orderId}", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(userId, "Используй: /check_order {orderId}");
                 return;
             }
+
             var orderId = parts[1];
+
             using var scope = _serviceProvider.CreateScope();
-            var userRepository = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>();
+            var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
             var orderPairRepo = scope.ServiceProvider.GetRequiredService<OrderPairRepository>();
             var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
             var mexcLogger = loggerFactory.CreateLogger<MexcService>();
+
             var users = await userRepository.GetAllAsync();
             var pair = (await orderPairRepo.GetAllAsync()).FirstOrDefault(p => p.BuyOrder.Id == orderId || p.SellOrder.Id == orderId);
+
             if (pair == null)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Ордер {orderId} не найден в базе данных", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(userId, $"Ордер {orderId} не найден в базе данных");
                 return;
             }
+
             var user = users.FirstOrDefault(u => u.Id == pair.UserId);
             if (user == null)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Пользователь для ордера {orderId} не найден", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(userId, $"Пользователь для ордера {orderId} не найден");
                 return;
             }
-            var result = await new MexcService(user.ApiCredentials.ApiKey, user.ApiCredentials.ApiSecret, mexcLogger).GetOrderAsync("KASUSDT", orderId, cancellationToken);
-            var sb = new System.Text.StringBuilder();
+
+            var result = await new MexcService(user.ApiCredentials.ApiKey, user.ApiCredentials.ApiSecret, mexcLogger)
+                .GetOrderAsync("KASUSDT", orderId, cancellationToken);
+
+            var sb = new StringBuilder();
             sb.AppendLine($"🔍 <b>Проверка ордера {orderId}</b>");
             sb.AppendLine($"👤 Пользователь: {user.Id}");
             sb.AppendLine($"📊 Тип: {(pair.BuyOrder.Id == orderId ? "Buy" : "Sell")}");
+
             if (result.IsSuccess)
             {
                 var order = result.Value;
                 sb.AppendLine($"✅ <b>Статус на бирже:</b> {order.Status}");
                 sb.AppendLine($"💰 Цена: {order.Price:F6}");
-                sb.AppendLine($"📈 Количество: {order.Quantity:F3}");
+                sb.AppendLine($"📊 Количество: {order.Quantity:F3}");
                 sb.AppendLine($"✅ Исполнено: {order.QuantityFilled:F3}");
                 sb.AppendLine($"💵 Сумма: {order.QuoteQuantityFilled:F6}");
+
                 var dbOrder = pair.BuyOrder.Id == orderId ? pair.BuyOrder : pair.SellOrder;
                 sb.AppendLine("\n📋 <b>В базе данных:</b>");
                 sb.AppendLine($"📊 Статус: {dbOrder.Status}");
                 sb.AppendLine($"💰 Цена: {dbOrder.Price:F6}");
-                sb.AppendLine($"📈 Количество: {dbOrder.Quantity:F3}");
+                sb.AppendLine($"📊 Количество: {dbOrder.Quantity:F3}");
                 sb.AppendLine($"✅ Исполнено: {dbOrder.QuantityFilled:F3}");
-                sb.AppendLine($"💵 Сумма: {dbOrder.QuoteQuantityFilled:F6}");
+
+                if (order.Status != dbOrder.Status)
+                {
+                    sb.AppendLine("\n⚠️ <b>РАСХОЖДЕНИЕ:</b> Статус отличается!");
+                    sb.AppendLine($"Биржа: {order.Status} | База: {dbOrder.Status}");
+                }
+
+                if (Math.Abs(order.QuantityFilled - dbOrder.QuantityFilled) > 0.001m)
+                {
+                    sb.AppendLine("⚠️ <b>РАСХОЖДЕНИЕ:</b> Количество исполнено отличается!");
+                    sb.AppendLine($"Биржа: {order.QuantityFilled:F3} | База: {dbOrder.QuantityFilled:F3}");
+                }
             }
             else
             {
-                sb.AppendLine($"❌ <b>Ошибка получения данных с биржи:</b>");
+                sb.AppendLine("❌ <b>Ошибка получения статуса:</b>");
                 sb.AppendLine(string.Join(", ", result.Errors.Select(e => e.Message)));
+
+                var dbOrder = pair.BuyOrder.Id == orderId ? pair.BuyOrder : pair.SellOrder;
+                sb.AppendLine("\n📋 <b>В базе данных:</b>");
+                sb.AppendLine($"📊 Статус: {dbOrder.Status}");
+                sb.AppendLine($"💰 Цена: {dbOrder.Price:F6}");
+                sb.AppendLine($"📊 Количество: {dbOrder.Quantity:F3}");
+                sb.AppendLine($"✅ Исполнено: {dbOrder.QuantityFilled:F3}");
             }
-            await _botClient.SendMessage(chatId: userId, text: sb.ToString(), cancellationToken: cancellationToken);
+
+            await _botClient.SendMessage(userId, sb.ToString());
         }
 
         [BotCommand("Показать балансы", AdminOnly = false, UserIdParameter = "userId")]
