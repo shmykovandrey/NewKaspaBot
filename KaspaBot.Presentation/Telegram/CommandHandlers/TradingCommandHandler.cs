@@ -93,7 +93,7 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             var buyResult = await mexcService.PlaceOrderAsync("KASUSDT", OrderSide.Buy, OrderType.Market, orderAmount, null, TimeInForce.GoodTillCanceled, cancellationToken);
             if (!buyResult.IsSuccess)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Ошибка покупки: {buyResult.Errors.FirstOrDefault()?.Message}", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: $"❌ <b>Ошибка покупки:</b> {buyResult.Errors.FirstOrDefault()?.Message}", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
             buyOrder.Id = buyResult.Value;
@@ -227,23 +227,23 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             var accResult = await mexcService.GetAccountInfoAsync(cancellationToken);
             if (!accResult.IsSuccess)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Ошибка получения баланса: {accResult.Errors.FirstOrDefault()?.Message}", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: $"❌ <b>Ошибка получения баланса:</b> {accResult.Errors.FirstOrDefault()?.Message}", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
             var kasBalance = accResult.Value.Balances.FirstOrDefault(b => b.Asset == "KAS")?.Available ?? 0m;
             if (kasBalance <= 0)
             {
-                await _botClient.SendMessage(chatId: userId, text: "У вас нет KAS для продажи.", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: "Нет свободных KAS для продажи.", cancellationToken: cancellationToken);
                 return;
             }
             // Продаём весь доступный KAS
             var sellResult = await mexcService.PlaceOrderAsync("KASUSDT", OrderSide.Sell, OrderType.Market, kasBalance, null, TimeInForce.GoodTillCanceled, cancellationToken);
             if (!sellResult.IsSuccess)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Ошибка продажи: {sellResult.Errors.FirstOrDefault()?.Message}", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: $"❌ <b>Ошибка продажи:</b> {sellResult.Errors.FirstOrDefault()?.Message}", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
-            await _botClient.SendMessage(chatId: userId, text: $"Продано {kasBalance:F2} KAS по рынку.", cancellationToken: cancellationToken);
+            await _botClient.SendMessage(chatId: userId, text: $"✅ <b>Продано {kasBalance:F2} KAS по рынку</b>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
         }
 
         [BotCommand("Продать X KAS по рынку")]
@@ -265,7 +265,7 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             var accResult = await mexcService.GetAccountInfoAsync(cancellationToken);
             if (!accResult.IsSuccess)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Ошибка получения баланса: {accResult.Errors.FirstOrDefault()?.Message}", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: $"❌ <b>Ошибка получения баланса:</b> {accResult.Errors.FirstOrDefault()?.Message}", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
             var kasBalance = accResult.Value.Balances.FirstOrDefault(b => b.Asset == "KAS")?.Available ?? 0m;
@@ -276,17 +276,17 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             }
             if (kasBalance < quantity)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Недостаточно KAS. Баланс: {kasBalance:F2}, запрошено: {quantity:F2}.", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: $"❌ <b>Недостаточно KAS.</b> Баланс: {kasBalance:F2}, запрошено: {quantity:F2}.", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
             // Продаём указанное количество
             var sellResult = await mexcService.PlaceOrderAsync("KASUSDT", OrderSide.Sell, OrderType.Market, quantity, null, TimeInForce.GoodTillCanceled, cancellationToken);
             if (!sellResult.IsSuccess)
             {
-                await _botClient.SendMessage(chatId: userId, text: $"Ошибка продажи: {sellResult.Errors.FirstOrDefault()?.Message}", cancellationToken: cancellationToken);
+                await _botClient.SendMessage(chatId: userId, text: $"❌ <b>Ошибка продажи:</b> {sellResult.Errors.FirstOrDefault()?.Message}", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                 return;
             }
-            await _botClient.SendMessage(chatId: userId, text: $"Продано {quantity:F2} KAS по рынку.", cancellationToken: cancellationToken);
+            await _botClient.SendMessage(chatId: userId, text: $"✅ <b>Продано {quantity:F2} KAS по рынку</b>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
         }
 
         [BotCommand("Статистика активных ордеров")]
@@ -310,21 +310,37 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
                 makerFee = feeResult.Value.Maker;
                 takerFee = feeResult.Value.Taker;
             }
-            var allPairs = await orderPairRepo.GetAllAsync();
-            var userPairs = allPairs.Where(p => p.UserId == userId).ToList();
-            int totalPairs = userPairs.Count;
-            int buyWithoutSell = userPairs.Count(p => !string.IsNullOrEmpty(p.BuyOrder.Id) && (string.IsNullOrEmpty(p.SellOrder.Id) || p.SellOrder.Status == Mexc.Net.Enums.OrderStatus.New));
-            var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 автоторговля ВКЛ" : "🔴 автоторговля ВЫКЛ";
-            var msg = $"{autotradeStatus}\n" +
-                      $"Комиссия биржи: Maker {makerFee * 100:F3}% / Taker {takerFee * 100:F3}%\n" +
-                      $"Всего пар: {totalPairs}\nПокупок без продажи: {buyWithoutSell}\n\n";
-            foreach (var pair in userPairs)
+            var userPairs = await orderPairRepo.GetOpenByUserIdAsync(userId);
+            if (!userPairs.Any())
             {
-                var buy = pair.BuyOrder;
-                var sell = pair.SellOrder;
-                msg += $"Покупка: {buy.Id} ({buy.Status}, {buy.Price:F6}) <-> Продажа: {sell.Id} ({sell.Status}, {sell.Price:F6})\n";
+                await _botClient.SendMessage(chatId: userId, text: "Нет активных ордеров на продажу", cancellationToken: cancellationToken);
+                return;
             }
-            await _botClient.SendMessage(chatId: userId, text: msg, cancellationToken: cancellationToken);
+            var sellOrders = userPairs.Where(p => p.SellOrder.Status == OrderStatus.New).ToList();
+            if (!sellOrders.Any())
+            {
+                await _botClient.SendMessage(chatId: userId, text: "Нет активных ордеров на продажу", cancellationToken: cancellationToken);
+                return;
+            }
+            var totalSum = sellOrders.Sum(p => p.SellOrder.Quantity * (p.SellOrder.Price ?? 0m));
+            var currentPrice = await mexcService.GetSymbolPriceAsync("KASUSDT", cancellationToken);
+            var currentPriceValue = currentPrice.IsSuccess ? currentPrice.Value : 0m;
+            var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 Автоторговля включена" : "🔴 Автоторговля выключена";
+            var autoBuyInfo = "";
+            if (user.Settings.IsAutoTradeEnabled && user.Settings.LastDcaBuyPrice.HasValue)
+            {
+                var priceChange = 100m * (currentPriceValue - user.Settings.LastDcaBuyPrice.Value) / user.Settings.LastDcaBuyPrice.Value;
+                autoBuyInfo = $"\n\ud83d\udcc9 До автопокупки: {priceChange:F2}% (реальная цель: {user.Settings.PercentPriceChange:F6})";
+            }
+            var rows = sellOrders.Select((o, i) => (
+                Index: i + 1,
+                Qty: o.Quantity,
+                Price: o.Price.GetValueOrDefault(),
+                Sum: o.Quantity * o.Price.GetValueOrDefault(),
+                Deviation: currentPriceValue > 0 ? 100m * ((o.Price.GetValueOrDefault()) - currentPriceValue) / currentPriceValue : 0m
+            )).ToList();
+            var text = NotificationFormatter.StatTable(rows, totalSum, currentPriceValue, autotradeStatus, autoBuyInfo, sellOrders.Count);
+            await _botClient.SendMessage(chatId: userId, text: text, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
         }
 
         [BotCommand("Таблица открытых ордеров")]
@@ -352,43 +368,22 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             var currentPriceResult = await mexcService.GetSymbolPriceAsync("KASUSDT", cancellationToken);
             var currentPrice = currentPriceResult.IsSuccess ? currentPriceResult.Value : 0m;
             var totalSum = sellOrders.Sum(o => o.Quantity * o.Price.GetValueOrDefault());
-            var table = "| №  | Количество | Цена   | Сумма   | Отклонение |\n|----|------------|--------|---------|------------|\n";
-            for (int i = 0; i < Math.Min(10, sellOrders.Count); i++)
+            var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 Автоторговля включена" : "🔴 Автоторговля выключена";
+            var autoBuyInfo = "";
+            if (user.Settings.IsAutoTradeEnabled && user.Settings.LastDcaBuyPrice.HasValue)
             {
-                var o = sellOrders[i];
-                var sum = o.Quantity * o.Price.GetValueOrDefault();
-                decimal deviation = ((o.Price.GetValueOrDefault() / currentPrice) - 1m) * 100m;
-                deviation = Math.Round(deviation, 2);
-                if (deviation > 0) deviation = -deviation;
-                var idxStr = (i + 1).ToString().PadLeft(3);
-                var qtyStr = o.Quantity.ToString("F2", System.Globalization.CultureInfo.InvariantCulture).PadLeft(8);
-                var priceStr = o.Price.GetValueOrDefault().ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(7);
-                var sumStr = sum.ToString("F2", System.Globalization.CultureInfo.InvariantCulture).PadLeft(7);
-                var devStr = ($"{deviation,6:F2}%").PadLeft(9);
-                table += $"|{idxStr} |{qtyStr} |{priceStr} |{sumStr} |{devStr} |\n";
+                var priceChange = 100m * (currentPrice - user.Settings.LastDcaBuyPrice.Value) / user.Settings.LastDcaBuyPrice.Value;
+                autoBuyInfo = $"\n\ud83d\udcc9 До автопокупки: {priceChange:F2}% (реальная цель: {user.Settings.PercentPriceChange:F6})";
             }
-            if (sellOrders.Count > 11) {
-                table += "|-----|----------|--------|---------|-------------|\n";
-                var o = sellOrders[sellOrders.Count - 1];
-                var sum = o.Quantity * o.Price.GetValueOrDefault();
-                decimal deviation = ((o.Price.GetValueOrDefault() / currentPrice) - 1m) * 100m;
-                deviation = Math.Round(deviation, 2);
-                if (deviation > 0) deviation = -deviation;
-                var idxStr = (sellOrders.Count).ToString().PadLeft(3);
-                var qtyStr = o.Quantity.ToString("F2", System.Globalization.CultureInfo.InvariantCulture).PadLeft(8);
-                var priceStr = o.Price.GetValueOrDefault().ToString("F4", System.Globalization.CultureInfo.InvariantCulture).PadLeft(7);
-                var sumStr = sum.ToString("F2", System.Globalization.CultureInfo.InvariantCulture).PadLeft(7);
-                var devStr = ($"{deviation,6:F2}%").PadLeft(9);
-                table += $"|{idxStr} |{qtyStr} |{priceStr} |{sumStr} |{devStr} |\n";
-            }
-            var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 автоторговля ВКЛ" : "🔴 автоторговля ВЫКЛ";
-            var msg = $"{autotradeStatus}\n" +
-                      $"🚀 Ордера на продажу 🚀\n" +
-                      $"📊 Общее количество ордеров: {sellOrders.Count}\n" +
-                      $"💰 Общая сумма всех ордеров: {totalSum:F2}\n\n" +
-                      table +
-                      $"\n💵 Текущая цена: {currentPrice:F4}";
-            await _botClient.SendMessage(chatId: userId, text: msg, cancellationToken: cancellationToken);
+            var rows = sellOrders.Select((o, i) => (
+                Index: i + 1,
+                Qty: o.Quantity,
+                Price: o.Price.GetValueOrDefault(),
+                Sum: o.Quantity * o.Price.GetValueOrDefault(),
+                Deviation: currentPrice > 0 ? 100m * (o.Price.GetValueOrDefault() - currentPrice) / currentPrice : 0m
+            )).ToList();
+            var text = NotificationFormatter.StatTable(rows, totalSum, currentPrice, autotradeStatus, autoBuyInfo, sellOrders.Count);
+            await _botClient.SendMessage(chatId: userId, text: text, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
         }
 
         [BotCommand("Таблица профита")]
