@@ -756,6 +756,106 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
             }
         }
 
+        [BotCommand("Применить изменения статусов", AdminOnly = true)]
+        public async Task HandleApplyStatusChangesCommand(Message message, CancellationToken cancellationToken)
+        {
+            var userId = message.Chat.Id;
+            if (userId != 130822044)
+            {
+                await _botClient.SendMessage(chatId: userId, text: "❌ <b>Доступ запрещен</b>\n\n💡 <i>Эта команда доступна только администратору</i>", cancellationToken: cancellationToken);
+                return;
+            }
+
+            using var scope = _serviceProvider.CreateScope();
+            var orderPairRepo = scope.ServiceProvider.GetRequiredService<OrderPairRepository>();
+            var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+            var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+
+            var allPairs = (await orderPairRepo.GetAllAsync()).Where(p => !p.CompletedAt.HasValue).ToList();
+            var appliedChanges = new List<(string orderId, string oldStatus, string newStatus, string reason)>();
+
+            foreach (var pair in allPairs)
+            {
+                var user = await userRepository.GetByIdAsync(pair.UserId);
+                if (user == null) continue;
+
+                var mexcLogger = loggerFactory.CreateLogger<MexcService>();
+                var mexcService = new MexcService(user.ApiCredentials.ApiKey, user.ApiCredentials.ApiSecret, mexcLogger);
+
+                // Проверяем buy-ордер
+                if (!string.IsNullOrEmpty(pair.BuyOrder.Id) && !IsFinal(pair.BuyOrder.Status))
+                {
+                    var oldStatus = pair.BuyOrder.Status.ToString();
+                    var result = await mexcService.GetOrderAsync(pair.BuyOrder.Symbol, pair.BuyOrder.Id, cancellationToken);
+                    if (result.IsSuccess)
+                    {
+                        var newStatus = result.Value.Status.ToString();
+                        if (newStatus != oldStatus)
+                        {
+                            pair.BuyOrder.Status = result.Value.Status;
+                            pair.BuyOrder.QuantityFilled = result.Value.QuantityFilled;
+                            pair.BuyOrder.QuoteQuantityFilled = result.Value.QuoteQuantityFilled;
+                            if (result.Value.OrderType == OrderType.Market && result.Value.Status == OrderStatus.Filled && result.Value.QuantityFilled > 0 && result.Value.QuoteQuantityFilled > 0)
+                            {
+                                pair.BuyOrder.Price = result.Value.QuoteQuantityFilled / result.Value.QuantityFilled;
+                            }
+                            else
+                            {
+                                pair.BuyOrder.Price = result.Value.Price;
+                            }
+                            pair.BuyOrder.UpdatedAt = DateTime.UtcNow;
+                            appliedChanges.Add((pair.BuyOrder.Id, oldStatus, newStatus, "Buy-ордер"));
+                        }
+                    }
+                }
+
+                // Проверяем sell-ордер
+                if (!string.IsNullOrEmpty(pair.SellOrder.Id) && !IsFinal(pair.SellOrder.Status))
+                {
+                    var oldStatus = pair.SellOrder.Status.ToString();
+                    var result = await mexcService.GetOrderAsync(pair.SellOrder.Symbol, pair.SellOrder.Id, cancellationToken);
+                    if (result.IsSuccess)
+                    {
+                        var newStatus = result.Value.Status.ToString();
+                        if (newStatus != oldStatus)
+                        {
+                            pair.SellOrder.Status = result.Value.Status;
+                            pair.SellOrder.QuantityFilled = result.Value.QuantityFilled;
+                            pair.SellOrder.Price = result.Value.Price;
+                            pair.SellOrder.UpdatedAt = DateTime.UtcNow;
+                            if (result.Value.Status == OrderStatus.Filled)
+                            {
+                                pair.CompletedAt = DateTime.UtcNow;
+                                var sellAmount = result.Value.QuantityFilled * result.Value.Price;
+                                var buyAmount = pair.BuyOrder.QuantityFilled * pair.BuyOrder.Price.GetValueOrDefault();
+                                pair.Profit = sellAmount - buyAmount - pair.BuyOrder.Commission;
+                            }
+                            appliedChanges.Add((pair.SellOrder.Id, oldStatus, newStatus, "Sell-ордер"));
+                        }
+                    }
+                }
+
+                await orderPairRepo.UpdateAsync(pair);
+            }
+
+            if (appliedChanges.Any())
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("✅ <b>Применены изменения статусов</b>\n");
+                sb.AppendLine($"📊 <b>Обновлено ордеров:</b> {appliedChanges.Count}\n");
+                sb.AppendLine("📋 <b>Список изменений:</b>");
+                foreach (var (orderId, oldStatus, newStatus, reason) in appliedChanges)
+                {
+                    sb.AppendLine($"• <code>{orderId}</code>: {oldStatus} → {newStatus} ({reason})");
+                }
+                await _botClient.SendMessage(chatId: userId, text: sb.ToString(), cancellationToken: cancellationToken);
+            }
+            else
+            {
+                await _botClient.SendMessage(chatId: userId, text: "ℹ️ <b>Изменений не найдено</b>\n\n💡 <i>Все ордера имеют актуальные статусы</i>", cancellationToken: cancellationToken);
+            }
+        }
+
         [BotCommand("Проверить статус ордера", AdminOnly = true)]
         public async Task HandleCheckOrderStatusCommand(Message message, CancellationToken cancellationToken)
         {
@@ -813,6 +913,74 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
                 sb.AppendLine(string.Join(", ", result.Errors.Select(e => e.Message)));
             }
             await _botClient.SendMessage(chatId: userId, text: sb.ToString(), cancellationToken: cancellationToken);
+        }
+
+        [BotCommand("Показать балансы", AdminOnly = false, UserIdParameter = "userId")]
+        public async Task HandleBalanceCommand(Message message, CancellationToken cancellationToken, long targetUserId = 0)
+        {
+            var adminUserId = message.Chat.Id;
+            var userId = targetUserId > 0 ? targetUserId : adminUserId;
+            var isAdmin = adminUserId == 130822044;
+
+            if (targetUserId > 0 && !isAdmin)
+            {
+                await _botClient.SendMessage(chatId: adminUserId, text: "❌ У вас нет прав для просмотра баланса другого пользователя.", cancellationToken: cancellationToken);
+                return;
+            }
+
+            using var scope = _serviceProvider.CreateScope();
+            var user = await scope.ServiceProvider.GetRequiredService<IUserRepository>().GetByIdAsync(userId);
+            if (user == null)
+            {
+                var text = targetUserId > 0 ? $"❌ Пользователь {userId} не найден." : "❌ Пользователь не найден.";
+                await _botClient.SendMessage(chatId: adminUserId, text: text, cancellationToken: cancellationToken);
+                return;
+            }
+
+            var mexcLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger<MexcService>();
+            var mexcService = new MexcService(user.ApiCredentials.ApiKey, user.ApiCredentials.ApiSecret, mexcLogger);
+            var result = await mexcService.GetAccountInfoAsync(cancellationToken);
+            if (!result.IsSuccess)
+            {
+                var text = targetUserId > 0 ? $"❌ Ошибка получения баланса пользователя {userId}: {result.Errors.FirstOrDefault()?.Message}" : $"❌ Ошибка получения баланса: {result.Errors.FirstOrDefault()?.Message}";
+                await _botClient.SendMessage(chatId: adminUserId, text: text, cancellationToken: cancellationToken);
+                return;
+            }
+
+            var balances = result.Value.Balances.Where(b => b.Total > 0).ToList();
+            if (!balances.Any())
+            {
+                var text = targetUserId > 0 ? $"На счету пользователя {userId} нет средств." : "На вашем счету нет средств.";
+                await _botClient.SendMessage(chatId: adminUserId, text: text, cancellationToken: cancellationToken);
+                return;
+            }
+
+            decimal totalUsdt = 0;
+            var rows = new List<(string Asset, decimal Total, decimal Available, decimal Frozen, decimal? UsdtValue)>();
+
+            foreach (var b in balances)
+            {
+                decimal? usdtValue = null;
+                if (b.Asset == "USDT")
+                {
+                    usdtValue = b.Total;
+                    totalUsdt += b.Total;
+                }
+                else
+                {
+                    var priceResult = await mexcService.GetSymbolPriceAsync(b.Asset + "USDT", cancellationToken);
+                    if (priceResult.IsSuccess)
+                    {
+                        usdtValue = b.Total * priceResult.Value;
+                        totalUsdt += usdtValue.Value;
+                    }
+                }
+                rows.Add((b.Asset, b.Total, b.Available, b.Total - b.Available, usdtValue));
+            }
+
+            var title = targetUserId > 0 ? $"💰 <b>Баланс пользователя {userId}</b>" : "💰 <b>Ваш баланс</b>";
+            var balanceText = title + "\n\n" + NotificationFormatter.BalanceTable(rows, totalUsdt);
+            await _botClient.SendMessage(chatId: adminUserId, text: balanceText, cancellationToken: cancellationToken);
         }
 
         [BotCommand("Включить/выключить автоторговлю")]
@@ -915,6 +1083,11 @@ namespace KaspaBot.Presentation.Telegram.CommandHandlers
                 };
             }
             return "/" + name.ToLowerInvariant();
+        }
+
+        private static bool IsFinal(OrderStatus status)
+        {
+            return status == OrderStatus.Filled || status == OrderStatus.Canceled;
         }
     }
 }

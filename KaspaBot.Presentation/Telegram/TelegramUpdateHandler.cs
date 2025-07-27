@@ -559,6 +559,16 @@ public class TelegramUpdateHandler : IUpdateHandler
                     await tradingCommandHandler.HandleCheckOrderStatusCommand(update.Message, cancellationToken);
                     return;
                 }
+                else if (text.Equals("/apply_status_changes", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleApplyStatusChangesCommand(update.Message, cancellationToken);
+                    return;
+                }
+                else if (text.StartsWith("/balance", StringComparison.OrdinalIgnoreCase))
+                {
+                    await tradingCommandHandler.HandleBalanceCommand(update.Message, cancellationToken);
+                    return;
+                }
                 else
                 {
                     await botClient.SendMessage(
