@@ -52,8 +52,7 @@ var builder = Host.CreateDefaultBuilder(args)
         services.AddHostedService<AdminStartupNotifier>();
         // Уведомление админу о завершении
         services.AddHostedService<AdminShutdownNotifier>();
-        // Восстановление статусов ордеров
-        services.AddHostedService<OrderRecoveryService>();
+        // Восстановление статусов ордеров (только по команде)
         services.AddSingleton<OrderRecoveryService>();
         services.AddSingleton<IOrderRecoveryService>(sp => sp.GetRequiredService<OrderRecoveryService>());
         // DCA автоторговля
