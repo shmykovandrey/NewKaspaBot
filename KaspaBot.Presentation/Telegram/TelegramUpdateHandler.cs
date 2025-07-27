@@ -54,7 +54,30 @@ public class TelegramUpdateHandler : IUpdateHandler
 
         try
         {
-            if (update.Type == UpdateType.Message && update.Message?.Text != null)
+            if (update.Type == UpdateType.CallbackQuery && update.CallbackQuery != null)
+            {
+                var callback = update.CallbackQuery;
+                var userId = callback.From.Id;
+                var data = callback.Data;
+                _logger.LogInformation($"Получен CallbackQuery от {userId}: {data}");
+                
+                if (!await userRepository.ExistsAsync(userId))
+                {
+                    await botClient.AnswerCallbackQuery(callback.Id, "❌ Вы не зарегистрированы. Отправьте /start", showAlert: false, cancellationToken: cancellationToken);
+                    return;
+                }
+                
+                var user = await userRepository.GetByIdAsync(userId);
+                if (user == null)
+                {
+                    await botClient.AnswerCallbackQuery(callback.Id, "❌ Пользователь не найден", showAlert: false, cancellationToken: cancellationToken);
+                    return;
+                }
+                
+                await HandleConfigCallback(botClient, callback, user, cancellationToken);
+                return;
+            }
+            else if (update.Type == UpdateType.Message && update.Message?.Text != null)
             {
                 var userId = update.Message.Chat.Id;
                 var text = update.Message.Text.Trim();
@@ -569,6 +592,16 @@ public class TelegramUpdateHandler : IUpdateHandler
                     await tradingCommandHandler.HandleBalanceCommand(update.Message, cancellationToken);
                     return;
                 }
+                else if (text.Equals("/config", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleConfigCommand(botClient, update.Message, cancellationToken);
+                    return;
+                }
+                else if (ConfigStates.TryGetValue(userId, out var currentConfigStep))
+                {
+                    await HandleConfigTextInput(botClient, update.Message, currentConfigStep, cancellationToken);
+                    return;
+                }
                 else
                 {
                     await botClient.SendMessage(
@@ -601,5 +634,404 @@ public class TelegramUpdateHandler : IUpdateHandler
     {
         _logger.LogError(exception, $"Telegram error from {errorSource}");
         await Task.CompletedTask;
+    }
+
+    private async Task HandleConfigCommand(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var userRepository = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>();
+        var mexcService = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IMexcService>();
+        
+        var userId = message.Chat.Id;
+        var user = await userRepository.GetByIdAsync(userId);
+        
+        if (user == null)
+        {
+            await botClient.SendMessage(chatId: userId, text: "❌ Пользователь не найден.", cancellationToken: cancellationToken);
+            return;
+        }
+        
+        decimal usdtBalance = 0m;
+        try
+        {
+            var accResult = await mexcService.GetAccountInfoAsync(cancellationToken);
+            if (accResult.IsSuccess)
+            {
+                usdtBalance = accResult.Value.Balances.FirstOrDefault(b => b.Asset == "USDT")?.Available ?? 0m;
+            }
+        }
+        catch { }
+        
+        var orderAmountText = user.Settings.OrderAmountMode == KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed 
+            ? $"💰 <b>Сумма ордера:</b> <code>{user.Settings.OrderAmount:F2} USDT</code>"
+            : $"⚙️ <b>Коэффициент:</b> <code>{user.Settings.DynamicOrderCoef:F2}</code>\n💰 <b>Текущий размер:</b> <code>{user.Settings.GetOrderAmount(usdtBalance):F2} USDT</code>";
+        
+        var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 автоторговля ВКЛ" : "🔴 автоторговля ВЫКЛ";
+        
+        var configText = $"⚙️ <b>Настройки бота</b>\n\n{autotradeStatus}\n🔧 <b>Настройки ордера:</b> <code>{(user.Settings.OrderAmountMode == KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed ? "Фиксированный" : "Динамический")}</code>\n" +
+            orderAmountText + "\n" +
+            $"💎 <b>Макс. сумма:</b> <code>{user.Settings.MaxUsdtUsing:F2} USDT</code>\n" +
+            $"📉 <b>% падения:</b> <code>{user.Settings.PercentPriceChange:F1}%</code>\n" +
+            $"📈 <b>% прибыли:</b> <code>{user.Settings.PercentProfit:F1}%</code>\n" +
+            $"🔑 <b>API Key:</b> <code>{user.ApiCredentials.ApiKey.Substring(0, Math.Min(8, user.ApiCredentials.ApiKey.Length))}...</code>\n\n" +
+            "💡 <i>Выберите параметр для изменения:</i>";
+        
+        var replyMarkup = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData(user.Settings.IsAutoTradeEnabled ? "🛑 Отключить автоторговлю" : "▶️ Включить автоторговлю", "config_toggle_autotrade") },
+            new[] { InlineKeyboardButton.WithCallbackData("🔧 Настройки ордера", "config_OrderAmountMode") },
+            new[] { InlineKeyboardButton.WithCallbackData("💎 Макс. сумма", "config_MaxUsdtUsing") },
+            new[] 
+            { 
+                InlineKeyboardButton.WithCallbackData("📉 % падения", "config_PercentPriceChange"),
+                InlineKeyboardButton.WithCallbackData("📈 % прибыли", "config_PercentProfit")
+            },
+            new[] { InlineKeyboardButton.WithCallbackData("🔑 API ключи", "config_ApiKeys") },
+            new[] { InlineKeyboardButton.WithCallbackData("❌ Закрыть", "config_close") }
+        });
+        
+        await botClient.SendMessage(chatId: userId, text: configText, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
+        ConfigStates[userId] = "menu";
+    }
+
+    private async Task HandleConfigCallback(ITelegramBotClient botClient, CallbackQuery callback, KaspaBot.Domain.Entities.User user, CancellationToken cancellationToken)
+    {
+        var userId = user.Id;
+        var data = callback.Data;
+        
+        switch (data)
+        {
+            case "config_OrderAmount":
+                await botClient.SendMessage(chatId: userId, text: "💰 <b>Введите новую сумму ордера (USDT):</b>\n\n💡 <i>Минимум: 1 USDT</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "OrderAmount";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_MaxUsdtUsing":
+                await botClient.SendMessage(chatId: userId, text: "💎 <b>Введите новую максимальную сумму (USDT):</b>\n\n💡 <i>Максимальная сумма для торговли</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "MaxUsdtUsing";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_PercentPriceChange":
+                await botClient.SendMessage(chatId: userId, text: "📉 <b>Введите новый процент падения:</b>\n\n💡 <i>Например: 0.5 (0.5%)</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "PercentPriceChange";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_PercentProfit":
+                await botClient.SendMessage(chatId: userId, text: "📈 <b>Введите новый процент прибыли:</b>\n\n💡 <i>Например: 0.5 (0.5%)</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "PercentProfit";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_ApiKeys":
+                await botClient.SendMessage(chatId: userId, text: "🔑 <b>Введите новый API Key:</b>\n\n💡 <i>Публичный ключ от MEXC</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "ApiKey";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_OrderAmountMode":
+                var orderModeText = user.Settings.OrderAmountMode == KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed ? "Фиксированный" : "Динамический";
+                var orderModeMarkup = new InlineKeyboardMarkup(new[]
+                {
+                    new[] 
+                    { 
+                        InlineKeyboardButton.WithCallbackData("Фиксированный", "set_OrderAmountMode_Fixed"),
+                        InlineKeyboardButton.WithCallbackData("Динамический", "set_OrderAmountMode_Dynamic")
+                    },
+                    new[] { InlineKeyboardButton.WithCallbackData("⬅️ Назад", "config_back") }
+                });
+                await botClient.SendMessage(chatId: userId, text: $"🔧 <b>Настройки ордера</b>\n\n<b>Режим:</b> <code>{orderModeText}</code>\n\n<b>Выберите режим:</b>", parseMode: ParseMode.Html, replyMarkup: orderModeMarkup, cancellationToken: cancellationToken);
+                ConfigStates[userId] = "OrderAmountMode";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "set_OrderAmountMode_Fixed":
+                user.Settings.OrderAmountMode = KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed;
+                using (var updateScope = _scopeFactory.CreateScope())
+                {
+                    await updateScope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>().UpdateAsync(user);
+                }
+                await botClient.SendMessage(chatId: userId, text: "💰 <b>Введите сумму ордера (USDT):</b>\n\n<code>Минимум: 1 USDT</code>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "OrderAmount";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "set_OrderAmountMode_Dynamic":
+                _logger.LogInformation($"[CONFIG] set_OrderAmountMode_Dynamic: user={userId}");
+                user.Settings.OrderAmountMode = KaspaBot.Domain.ValueObjects.OrderAmountMode.Dynamic;
+                using (var updateScope = _scopeFactory.CreateScope())
+                {
+                    await updateScope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>().UpdateAsync(user);
+                }
+                await botClient.SendMessage(chatId: userId, text: "⚙️ <b>Введите коэффициент для динамического режима:</b>\n\n<code>Например: 40</code>\n\n<i>Отправьте число в чат. Для отмены — напишите 'Отмена'.</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                ConfigStates[userId] = "DynamicOrderCoef";
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                _logger.LogInformation($"[CONFIG] Ожидание ввода коэффициента: user={userId}");
+                break;
+                
+            case "config_back":
+                await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                await botClient.AnswerCallbackQuery(callback.Id, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_close":
+                if (callback.Message != null)
+                {
+                    await botClient.DeleteMessage(userId, callback.Message.MessageId, cancellationToken);
+                }
+                ConfigStates.TryRemove(userId, out _);
+                await botClient.AnswerCallbackQuery(callback.Id, "❌ Меню закрыто", showAlert: false, cancellationToken: cancellationToken);
+                break;
+                
+            case "config_toggle_autotrade":
+                user.Settings.IsAutoTradeEnabled = !user.Settings.IsAutoTradeEnabled;
+                using (var updateScope = _scopeFactory.CreateScope())
+                {
+                    await updateScope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>().UpdateAsync(user);
+                }
+                await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                var toggleText = user.Settings.IsAutoTradeEnabled ? "Автоторговля включена" : "Автоторговля отключена";
+                await botClient.AnswerCallbackQuery(callback.Id, toggleText, showAlert: false, cancellationToken: cancellationToken);
+                break;
+                
+            default:
+                _logger.LogWarning($"[CONFIG] Неизвестная команда callback: {callback.Data} для user={userId}");
+                await botClient.AnswerCallbackQuery(callback.Id, "❌ Неизвестная команда", showAlert: false, cancellationToken: cancellationToken);
+                break;
+        }
+    }
+
+    private async Task ShowInlineConfigMenu(ITelegramBotClient botClient, KaspaBot.Domain.Entities.User user, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var mexcService = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IMexcService>();
+        
+        decimal usdtBalance = 0m;
+        try
+        {
+            var accResult = await mexcService.GetAccountInfoAsync(cancellationToken);
+            if (accResult.IsSuccess)
+            {
+                usdtBalance = accResult.Value.Balances.FirstOrDefault(b => b.Asset == "USDT")?.Available ?? 0m;
+            }
+        }
+        catch { }
+        
+        var orderAmountText = user.Settings.OrderAmountMode == KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed 
+            ? $"💰 <b>Сумма ордера:</b> <code>{user.Settings.OrderAmount:F2} USDT</code>"
+            : $"⚙️ <b>Коэффициент:</b> <code>{user.Settings.DynamicOrderCoef:F2}</code>\n💰 <b>Текущий размер:</b> <code>{user.Settings.GetOrderAmount(usdtBalance):F2} USDT</code>";
+        
+        var autotradeStatus = user.Settings.IsAutoTradeEnabled ? "🟢 автоторговля ВКЛ" : "🔴 автоторговля ВЫКЛ";
+        
+        var configText = $"⚙️ <b>Настройки бота</b>\n\n{autotradeStatus}\n🔧 <b>Настройки ордера:</b> <code>{(user.Settings.OrderAmountMode == KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed ? "Фиксированный" : "Динамический")}</code>\n" +
+            orderAmountText + "\n" +
+            $"💎 <b>Макс. сумма:</b> <code>{user.Settings.MaxUsdtUsing:F2} USDT</code>\n" +
+            $"📉 <b>% падения:</b> <code>{user.Settings.PercentPriceChange:F1}%</code>\n" +
+            $"📈 <b>% прибыли:</b> <code>{user.Settings.PercentProfit:F1}%</code>\n" +
+            $"🔑 <b>API Key:</b> <code>{user.ApiCredentials.ApiKey.Substring(0, Math.Min(8, user.ApiCredentials.ApiKey.Length))}...</code>\n\n" +
+            "💡 <i>Выберите параметр для изменения:</i>";
+        
+        var replyMarkup = new InlineKeyboardMarkup(new[]
+        {
+            new[] { InlineKeyboardButton.WithCallbackData(user.Settings.IsAutoTradeEnabled ? "🛑 Отключить автоторговлю" : "▶️ Включить автоторговлю", "config_toggle_autotrade") },
+            new[] { InlineKeyboardButton.WithCallbackData("🔧 Настройки ордера", "config_OrderAmountMode") },
+            new[] { InlineKeyboardButton.WithCallbackData("💎 Макс. сумма", "config_MaxUsdtUsing") },
+            new[] 
+            { 
+                InlineKeyboardButton.WithCallbackData("📉 % падения", "config_PercentPriceChange"),
+                InlineKeyboardButton.WithCallbackData("📈 % прибыли", "config_PercentProfit")
+            },
+            new[] { InlineKeyboardButton.WithCallbackData("🔑 API ключи", "config_ApiKeys") },
+            new[] { InlineKeyboardButton.WithCallbackData("❌ Закрыть", "config_close") }
+        });
+        
+        await botClient.SendMessage(chatId: user.Id, text: configText, parseMode: ParseMode.Html, replyMarkup: replyMarkup, cancellationToken: cancellationToken);
+        ConfigStates[user.Id] = "menu";
+    }
+
+    private async Task HandleConfigTextInput(ITelegramBotClient botClient, Message message, string configStep, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var userRepository = scope.ServiceProvider.GetRequiredService<KaspaBot.Domain.Interfaces.IUserRepository>();
+        var userId = message.Chat.Id;
+        var data = message.Text.Trim();
+        var user = await userRepository.GetByIdAsync(userId);
+        
+        if (user == null)
+        {
+            await botClient.SendMessage(chatId: userId, text: "Пользователь не найден.", cancellationToken: cancellationToken);
+            ConfigStates.TryRemove(userId, out _);
+            return;
+        }
+        
+        if (data == "Отмена")
+        {
+            await botClient.SendMessage(chatId: userId, text: "❌ <b>Изменение настроек отменено</b>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+            ConfigStates.TryRemove(userId, out _);
+            return;
+        }
+        
+        decimal value;
+        switch (configStep)
+        {
+            case "menu":
+                switch (data)
+                {
+                    case "🔧 Настройки ордера":
+                        var orderModeText = user.Settings.OrderAmountMode == KaspaBot.Domain.ValueObjects.OrderAmountMode.Fixed ? "Фиксированный" : "Динамический";
+                        var orderModeMarkup = new InlineKeyboardMarkup(new[]
+                        {
+                            new[] 
+                            { 
+                                InlineKeyboardButton.WithCallbackData("Фиксированный", "set_OrderAmountMode_Fixed"),
+                                InlineKeyboardButton.WithCallbackData("Динамический", "set_OrderAmountMode_Dynamic")
+                            },
+                            new[] { InlineKeyboardButton.WithCallbackData("⬅️ Назад", "config_back") }
+                        });
+                        await botClient.SendMessage(chatId: userId, text: $"🔧 <b>Настройки ордера</b>\n\n<b>Режим:</b> <code>{orderModeText}</code>\n\n<b>Выберите режим:</b>", parseMode: ParseMode.Html, replyMarkup: orderModeMarkup, cancellationToken: cancellationToken);
+                        ConfigStates[userId] = "OrderAmountMode";
+                        break;
+                        
+                    case "💎 Макс. сумма":
+                        await botClient.SendMessage(chatId: userId, text: "💎 <b>Введите новую максимальную сумму (USDT):</b>\n\n💡 <i>Максимальная сумма для торговли</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                        ConfigStates[userId] = "MaxUsdtUsing";
+                        break;
+                        
+                    case "📉 % падения":
+                        await botClient.SendMessage(chatId: userId, text: "📉 <b>Введите новый процент падения:</b>\n\n💡 <i>Например: 0.5 (0.5%)</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                        ConfigStates[userId] = "PercentPriceChange";
+                        break;
+                        
+                    case "📈 % прибыли":
+                        await botClient.SendMessage(chatId: userId, text: "📈 <b>Введите новый процент прибыли:</b>\n\n💡 <i>Например: 0.5 (0.5%)</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                        ConfigStates[userId] = "PercentProfit";
+                        break;
+                        
+                    case "🔑 API ключи":
+                        await botClient.SendMessage(chatId: userId, text: "🔑 <b>Введите новый API Key:</b>\n\n💡 <i>Публичный ключ от Mexc</i>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                        ConfigStates[userId] = "ApiKey";
+                        break;
+                        
+                    case "❌ Отмена":
+                        await botClient.SendMessage(chatId: userId, text: "❌ <b>Изменение настроек отменено</b>", parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove(), cancellationToken: cancellationToken);
+                        ConfigStates.TryRemove(userId, out _);
+                        break;
+                        
+                    default:
+                        await botClient.SendMessage(chatId: userId, text: "❌ <b>Пожалуйста, выберите действие из меню</b>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                        break;
+                }
+                return;
+                
+            case "OrderAmount":
+                if (decimal.TryParse(data.Replace(",", "."), out value) && value >= 1m)
+                {
+                    user.Settings.OrderAmount = value;
+                    await userRepository.UpdateAsync(user);
+                    await botClient.SendMessage(chatId: userId, text: $"✅ <b>Сумма ордера обновлена:</b> <code>{value:F2} USDT</code>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                    await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                }
+                else
+                {
+                    await botClient.SendMessage(chatId: userId, text: "❌ <b>Ошибка!</b> Минимальная сумма ордера — 1 USDT", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                }
+                return;
+                
+            case "MaxUsdtUsing":
+                if (decimal.TryParse(data.Replace(",", "."), out value) && value > 0m)
+                {
+                    user.Settings.MaxUsdtUsing = value;
+                    await userRepository.UpdateAsync(user);
+                    await botClient.SendMessage(chatId: userId, text: $"✅ <b>Максимальная сумма обновлена:</b> <code>{value:F2} USDT</code>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                    await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                }
+                else
+                {
+                    await botClient.SendMessage(chatId: userId, text: "❌ <b>Ошибка!</b> Введите число больше 0.", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                }
+                return;
+                
+            case "PercentPriceChange":
+                if (decimal.TryParse(data.Replace(",", "."), out value) && value > 0m)
+                {
+                    user.Settings.PercentPriceChange = value;
+                    await userRepository.UpdateAsync(user);
+                    await botClient.SendMessage(chatId: userId, text: $"✅ <b>% падения обновлён:</b> <code>{value:F1}%</code>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                    await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                }
+                else
+                {
+                    await botClient.SendMessage(chatId: userId, text: "❌ <b>Ошибка!</b> Введите число больше 0.", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                }
+                return;
+                
+            case "PercentProfit":
+                if (decimal.TryParse(data.Replace(",", "."), out value) && value > 0m)
+                {
+                    user.Settings.PercentProfit = value;
+                    await userRepository.UpdateAsync(user);
+                    await botClient.SendMessage(chatId: userId, text: $"✅ <b>% прибыли обновлён:</b> <code>{value:F1}%</code>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                    await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                }
+                else
+                {
+                    await botClient.SendMessage(chatId: userId, text: "❌ <b>Ошибка!</b> Введите число больше 0.", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                }
+                return;
+                
+            case "ApiKey":
+                TempApiKeys[userId] = data;
+                await botClient.SendMessage(chatId: userId, text: "Теперь введите новый API Secret:", cancellationToken: cancellationToken);
+                ConfigStates[userId] = "ApiSecretUpdate";
+                return;
+                
+            case "ApiSecretUpdate":
+                string apiSecret;
+                if (!TempApiKeys.TryGetValue(userId, out apiSecret))
+                {
+                    await botClient.SendMessage(chatId: userId, text: "Сначала введите новый API Key.", cancellationToken: cancellationToken);
+                    ConfigStates[userId] = "ApiKey";
+                    return;
+                }
+                
+                var apiKey = data;
+                var logger = _loggerFactory.CreateLogger<KaspaBot.Infrastructure.Services.MexcService>();
+                var testResult = await KaspaBot.Infrastructure.Services.MexcService.Create(apiSecret, apiKey, logger).GetAccountInfoAsync(cancellationToken);
+                
+                if (!testResult.IsSuccess)
+                {
+                    await botClient.SendMessage(chatId: userId, text: $"Ошибка: ключи невалидны: {testResult.Errors.FirstOrDefault()?.Message}", cancellationToken: cancellationToken);
+                    ConfigStates[userId] = "ApiKey";
+                }
+                else
+                {
+                    user.ApiCredentials.ApiKey = apiSecret;
+                    user.ApiCredentials.ApiSecret = apiKey;
+                    await userRepository.UpdateAsync(user);
+                    await scope.ServiceProvider.GetRequiredService<KaspaBot.Infrastructure.Services.UserStreamManager>().ReloadUserAsync(user, cancellationToken);
+                    await botClient.SendMessage(chatId: userId, text: "✅ <b>API ключи успешно обновлены и переподключены!</b>", parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                    TempApiKeys.TryRemove(userId, out _);
+                    await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                }
+                return;
+                
+            case "DynamicOrderCoef":
+                _logger.LogInformation($"[CONFIG] Ввод коэффициента: '{data}' для user={userId}");
+                if (decimal.TryParse(data, out value) && value >= 1m && value <= 1000m)
+                {
+                    user.Settings.DynamicOrderCoef = value;
+                    await userRepository.UpdateAsync(user);
+                    await ShowInlineConfigMenu(botClient, user, cancellationToken);
+                    _logger.LogInformation($"[CONFIG] Коэффициент обновлён: {value} для user={userId}");
+                }
+                else
+                {
+                    await botClient.SendMessage(userId, "Некорректный коэффициент. Введите число от 1 до 1000 или напишите 'Отмена'.", cancellationToken: cancellationToken);
+                    _logger.LogWarning($"[CONFIG] Некорректный ввод коэффициента: '{data}' для user={userId}");
+                }
+                return;
+        }
     }
 }

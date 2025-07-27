@@ -40,6 +40,11 @@ namespace KaspaBot.Infrastructure.Services
             _logger = logger;
         }
 
+        public static MexcService Create(string apiKey, string apiSecret, ILogger<MexcService> logger)
+        {
+            return new MexcService(apiKey, apiSecret, logger);
+        }
+
         public async Task<Result<MexcAccountInfo>> GetAccountInfoAsync(CancellationToken ct = default)
         {
             try
