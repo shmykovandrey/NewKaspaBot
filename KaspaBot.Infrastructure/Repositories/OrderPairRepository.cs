@@ -56,5 +56,44 @@ namespace KaspaBot.Infrastructure.Repositories
             var deleted = await _context.SaveChangesAsync();
             _logger.LogInformation($"[ORDERPAIR-DELETE] userId={userId} удалено записей: {deleted}");
         }
+
+        public async Task<Order?> FindOrderByIdAsync(string orderId)
+        {
+            var buyOrder = await _context.OrderPairs
+                .Where(p => p.BuyOrder.Id == orderId)
+                .Select(p => p.BuyOrder)
+                .FirstOrDefaultAsync();
+
+            if (buyOrder != null)
+                return buyOrder;
+
+            var sellOrder = await _context.OrderPairs
+                .Where(p => p.SellOrder.Id == orderId)
+                .Select(p => p.SellOrder)
+                .FirstOrDefaultAsync();
+
+            return sellOrder;
+        }
+
+        public async Task<(OrderPair, Order)?> FindOrderAndPairByOrderIdAsync(string orderId)
+        {
+            var pairWithBuyOrder = await _context.OrderPairs
+                .Where(p => p.BuyOrder.Id == orderId)
+                .Select(p => new { Pair = p, Order = p.BuyOrder })
+                .FirstOrDefaultAsync();
+
+            if (pairWithBuyOrder != null)
+                return (pairWithBuyOrder.Pair, pairWithBuyOrder.Order);
+
+            var pairWithSellOrder = await _context.OrderPairs
+                .Where(p => p.SellOrder.Id == orderId)
+                .Select(p => new { Pair = p, Order = p.SellOrder })
+                .FirstOrDefaultAsync();
+
+            if (pairWithSellOrder != null)
+                return (pairWithSellOrder.Pair, pairWithSellOrder.Order);
+
+            return null;
+        }
     }
 } 

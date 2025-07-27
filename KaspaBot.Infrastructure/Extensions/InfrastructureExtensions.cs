@@ -42,6 +42,7 @@ namespace KaspaBot.Infrastructure.Extensions
             services.AddScoped<IUserRepository, UserRepository>();
             services.AddScoped<OrderPairRepository>();
             services.AddSingleton<EncryptionService>();
+            services.AddSingleton<OrderAuditService>();
             services.AddSingleton<UserStreamManager>(provider =>
             {
                 var userRepo = provider.GetRequiredService<IUserRepository>();

@@ -196,6 +196,25 @@ namespace KaspaBot.Infrastructure.Services
             return Result.Ok(tradesResult.Data.AsEnumerable());
         }
 
+        public async Task<Result<IEnumerable<Mexc.Net.Objects.Models.Spot.MexcOrder>>> GetOrderHistoryAsync(string symbol, CancellationToken ct = default)
+        {
+            try
+            {
+                var result = await _restClient.SpotApi.Trading.GetOrdersAsync(symbol, limit: 1000, ct: ct);
+                if (!result.Success || result.Data == null)
+                {
+                    _logger.LogError("Failed to get order history for {Symbol}: {Error}", symbol, result.Error?.Message);
+                    return Result.Fail<IEnumerable<Mexc.Net.Objects.Models.Spot.MexcOrder>>(result.Error?.Message ?? "Failed to get order history");
+                }
+                return Result.Ok(result.Data.AsEnumerable());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting order history for {Symbol}", symbol);
+                return Result.Fail<IEnumerable<Mexc.Net.Objects.Models.Spot.MexcOrder>>(new Error("Failed to get order history").CausedBy(ex));
+            }
+        }
+
         public async Task<decimal> GetTickSizeAsync(string symbol, CancellationToken ct = default)
         {
             var result = await _restClient.SpotApi.ExchangeData.GetExchangeInfoAsync(new[] { symbol }, ct);

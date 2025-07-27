@@ -27,8 +27,9 @@ namespace KaspaBot.Infrastructure.Services
         private readonly ConcurrentDictionary<long, CancellationTokenSource> _debounceCtsPerUser = new();
         private readonly object _debounceLock = new();
         private readonly KaspaBot.Domain.Interfaces.IBotMessenger _botMessenger;
+        private readonly OrderAuditService? _auditService;
 
-        public UserStreamManager(IUserRepository userRepository, ILogger<UserStreamManager> logger, ILoggerFactory loggerFactory, OrderPairRepository orderPairRepo, IServiceProvider serviceProvider, IOrderRecoveryService orderRecoveryService, KaspaBot.Domain.Interfaces.IBotMessenger botMessenger)
+        public UserStreamManager(IUserRepository userRepository, ILogger<UserStreamManager> logger, ILoggerFactory loggerFactory, OrderPairRepository orderPairRepo, IServiceProvider serviceProvider, IOrderRecoveryService orderRecoveryService, IBotMessenger botMessenger)
         {
             _userRepository = userRepository;
             _logger = logger;
@@ -37,6 +38,7 @@ namespace KaspaBot.Infrastructure.Services
             _serviceProvider = serviceProvider;
             _orderRecoveryService = orderRecoveryService;
             _botMessenger = botMessenger;
+            _auditService = serviceProvider.GetService<OrderAuditService>();
         }
 
         public async Task InitializeAllAsync(CancellationToken cancellationToken = default)
@@ -72,6 +74,23 @@ namespace KaspaBot.Infrastructure.Services
                         try
                         {
                             _logger.LogInformation($"[WS DIAG] EVENT: user={user.Id} orderId={orderUpdate.Data.OrderId} side={orderUpdate.Data.Side} status={orderUpdate.Data.Status} type={orderUpdate.Data.OrderType} qty={orderUpdate.Data.Quantity} price={orderUpdate.Data.Price} CumulativeQty={orderUpdate.Data.CumulativeQuantity} CumulativeQuoteQty={orderUpdate.Data.CumulativeQuoteQuantity}");
+                            
+                            // Отправляем событие в аудит
+                            if (_auditService != null)
+                            {
+                                var auditEvent = new OrderAuditEvent
+                                {
+                                    UserId = user.Id,
+                                    OrderId = orderUpdate.Data.OrderId.ToString(),
+                                    Symbol = "KASUSDT", // Используем стандартный символ
+                                    Side = orderUpdate.Data.Side,
+                                    Qty = orderUpdate.Data.Quantity,
+                                    Price = orderUpdate.Data.Price,
+                                    Status = orderUpdate.Data.Status
+                                };
+                                _auditService.Enqueue(auditEvent);
+                            }
+                            
                             // SELL-ордер исполнен
                             if (orderUpdate.Data.Side == Mexc.Net.Enums.OrderSide.Sell && orderUpdate.Data.Status == Mexc.Net.Enums.OrderStatus.Filled)
                             {
